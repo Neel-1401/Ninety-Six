@@ -7,7 +7,7 @@ Branch `rebuild`. Codex's recovery fixes (atomic execution prep, check-in receip
 - Full demo story passed end to end over HTTP against `demo.ps1` on a fresh database (`backend/scripts/smoke_story.py`), with openFDA **live**.
 - openFDA verified live (`backend/scripts/verify_live.py`).
 - README rewritten (setup scripts, PS-07 mapping, "Going live"); FEATURES.md reconciled from evidence; D15–D16 logged.
-- Deck and video script: `docs/DECK.md` / `docs/VIDEO_SCRIPT.md`.
+- 6-slide deck built as a Claude Slides artifact (export to PDF/PPTX for submission); video shot list in `docs/VIDEO_SCRIPT.md`.
 
 ## Still needed before 12 Nov, 10:00 AM IST (needs Neel)
 1. **Second live integration**: add Twilio trial or Gmail SMTP credentials to `backend\.env`, run `scripts\verify_live.py`, then record the demo with `scripts\dev.ps1`.
