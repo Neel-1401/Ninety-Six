@@ -226,6 +226,7 @@ def patch_episode(episode_id: int, body: EpisodePatchIn, session: Session = Depe
         raise errors.invalid_state("This episode is closed.")
     changed: list[str] = []
     patient = session.get(Patient, ep.patient_id)
+    old_phone = patient.phone_e164
     if body.patient is not None:
         data = body.patient.model_dump(exclude_unset=True)
         if not pre and set(data) - CONTACT_FIELDS:
@@ -261,6 +262,9 @@ def patch_episode(episode_id: int, body: EpisodePatchIn, session: Session = Depe
             changed.append("risk_inputs")
     if not changed:
         return episode_detail(session, ep, actor)
+    if "patient.phone_e164" in changed:
+        otp.revoke_patient_access_for_phone_change(session, patient, old_phone=old_phone,
+                                                   new_phone=patient.phone_e164, actor=actor)
     _bump(ep)
     if ep.status == EpisodeStatus.AWAITING_REVIEW:
         ep.status = EpisodeStatus.DRAFT

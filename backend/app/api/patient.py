@@ -389,4 +389,4 @@ def my_messages(episode_id: int, session: Session = Depends(get_db), actor: Acto
 def my_followups(episode_id: int, session: Session = Depends(get_db), actor: Actor = Depends(require_patient)):
     ep = episode_for_patient(session, actor, episode_id)
     rows = session.scalars(select(FollowUpEvent).where(FollowUpEvent.episode_id == ep.id).order_by(FollowUpEvent.id)).all()
-    return [p_followup_out(f) for f in rows]
+    return [p_followup_out(f, session) for f in rows]

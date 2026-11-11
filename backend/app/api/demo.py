@@ -12,7 +12,14 @@ from sqlalchemy.orm import Session
 
 from .. import errors
 from ..auth import sessions
-from ..auth.deps import current_actor, episode_for_patient, episode_for_staff, get_db, optional_actor
+from ..auth.deps import (
+    current_actor,
+    episode_for_patient,
+    episode_for_staff,
+    get_db,
+    optional_actor,
+    patient_episode_ids,
+)
 from ..auth.security import mask_phone
 from ..auth.sessions import Actor
 from ..clock import clock, iso
@@ -103,10 +110,14 @@ def advance(body: AdvanceIn, session: Session = Depends(get_db), actor: Actor = 
 
 
 @router.get("/outbox", dependencies=[Depends(demo_only)])
-def outbox(session: Session = Depends(get_db)):
-    rows = session.scalars(
-        select(Message).where(Message.mode == Mode.SIMULATED).order_by(Message.id.desc()).limit(50)
-    ).all()
+def outbox(session: Session = Depends(get_db), actor: Actor | None = Depends(optional_actor)):
+    q = select(Message).where(Message.mode == Mode.SIMULATED)
+    if actor is None:
+        # Signed out (e.g. the patient sign-in screen): only sign-in codes and invitations.
+        q = q.where(Message.kind.in_(("otp", "invitation")))
+    elif actor.is_patient:
+        q = q.where(Message.episode_id.in_(patient_episode_ids(session, actor)))
+    rows = session.scalars(q.order_by(Message.id.desc()).limit(50)).all()
     return [
         {
             "id": m.id,

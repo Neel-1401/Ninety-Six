@@ -262,3 +262,53 @@ def verify_code(session: Session, *, phone_raw: str, code: str, ip: str) -> User
         inv.accepted_at = now
     session.flush()
     return user
+
+
+# --------------------------------------------------------------------------- phone change (ACCEPTANCE A-04)
+def revoke_patient_access_for_phone_change(session: Session, patient: Patient, *, old_phone: Optional[str],
+                                           new_phone: str, actor) -> dict:  # noqa: ANN001
+    """When staff change a patient's phone, nothing issued to the old number may keep working:
+    revoke live invitations, invalidate unconsumed codes for the old phone, revoke every session of
+    the patient's user(s), and move the user's phone to the new number. A new invitation is required.
+    Flushes; caller commits."""
+    from ..models import AuthSession
+
+    now = clock.real_now()
+    inv_res = session.execute(
+        update(Invitation)
+        .where(Invitation.patient_id == patient.id, Invitation.status.in_(("pending", "accepted")))
+        .values(status="revoked")
+    )
+    otp_count = 0
+    if old_phone:
+        otp_res = session.execute(
+            update(OtpChallenge)
+            .where(OtpChallenge.phone_e164 == old_phone, OtpChallenge.consumed_at.is_(None),
+                   OtpChallenge.invalidated_at.is_(None))
+            .values(invalidated_at=now)
+        )
+        otp_count = otp_res.rowcount or 0
+    sess_count = 0
+    users = session.scalars(select(User).where(User.role == Role.PATIENT, User.patient_id == patient.id)).all()
+    for u in users:
+        res = session.execute(
+            update(AuthSession).where(AuthSession.user_id == u.id, AuthSession.revoked_at.is_(None)).values(revoked_at=now)
+        )
+        sess_count += res.rowcount or 0
+        u.phone_e164 = new_phone
+    session.flush()
+    episode_ids = session.scalars(select(DischargeEpisode.id).where(DischargeEpisode.patient_id == patient.id)).all()
+    summary = {"invitations_revoked": inv_res.rowcount or 0, "codes_invalidated": otp_count, "sessions_revoked": sess_count}
+    for eid in episode_ids:
+        record_event(
+            session,
+            "invite.revoked",
+            "Patient phone changed: earlier invitations, codes and patient sessions revoked; send a new invitation",
+            episode_id=eid,
+            actor_type="user",
+            actor_id=actor.id,
+            actor_label=actor.label,
+            detail=summary,
+            scopes=["episode", "messages"],
+        )
+    return summary

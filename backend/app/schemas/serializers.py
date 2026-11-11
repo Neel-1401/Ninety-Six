@@ -768,15 +768,22 @@ def p_message_out(m: Message) -> dict[str, Any]:
     }
 
 
-def p_followup_out(f: FollowUpEvent) -> dict[str, Any]:
+def p_followup_out(f: FollowUpEvent, session: Optional[Session] = None) -> dict[str, Any]:
+    show_slot = f.status in ("calendar_event_created", "confirmed_by_hospital")
+    if f.status == "proposed" and f.action_id and session is not None:
+        a = session.get(ProposedAction, f.action_id)
+        show_slot = bool(a and a.approval_state in (ApprovalState.APPROVED, ApprovalState.ROUTINE))
     return {
         "id": f.id,
         "title": f.title,
         "provider_name": f.provider_name,
-        "location": f.location,
-        "start_at": iso(f.start_at),
+        "location": f.location if show_slot else None,
+        # The agent's proposed time is not shown to the patient until a doctor approves the booking.
+        "start_at": iso(f.start_at) if show_slot else None,
         "status": f.status,
         "availability_checked": bool(f.availability_checked),
+        # simulated => no real calendar event exists anywhere (ACCEPTANCE A-12)
+        "calendar_mode": f.calendar_mode,
     }
 
 

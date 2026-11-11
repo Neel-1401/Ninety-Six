@@ -257,3 +257,98 @@ def test_staff_cannot_self_register_or_pick_role(client):
     assert r.status_code == 404
     assert r.headers.get("content-type", "").startswith("application/json")
     assert CSRF  # header constant exported for other tests
+
+
+# --------------------------------------------------------------------------- ACCEPTANCE A-04 regression
+def test_phone_change_revokes_old_number_access(client, staff_ids, make_client):
+    from tests.conftest import api_patch
+
+    ep = make_episode(client, staff_ids, phone="+919000000301")
+    invite(client, ep["id"])
+    old = "+919000000301"
+    # Holder of the (wrong) old number signs in and can read the episode.
+    holder = make_client()
+    api_post(holder, "/api/auth/patient/request-code", {"phone": old})
+    assert api_post(holder, "/api/auth/patient/verify", {"phone": old, "code": latest_otp_code(holder, old)}).status_code == 200
+    assert holder.get(f"/api/me/episodes/{ep['id']}/today").status_code == 200
+    # A second, not yet used code for the old number is outstanding.
+    pending = make_client()
+    with db.session_scope() as s:  # bypass cooldown for the second request
+        for ch in s.scalars(select(OtpChallenge).where(OtpChallenge.phone_e164 == old)).all():
+            ch.created_at = ch.created_at - timedelta(minutes=5)
+    api_post(pending, "/api/auth/patient/request-code", {"phone": old})
+    unused_code = latest_otp_code(pending, old)
+
+    detail = client.get(f"/api/episodes/{ep['id']}").json()
+    r = api_patch(client, f"/api/episodes/{ep['id']}",
+                  {"row_version": detail["row_version"], "patient": {"phone_e164": "+919000000302"}})
+    assert r.status_code == 200, r.text
+    assert r.json()["invitation"]["status"] == "revoked"
+
+    # Old session is dead; the outstanding code fails; the old number can't get a new code.
+    assert holder.get(f"/api/me/episodes/{ep['id']}/today").status_code == 401
+    assert api_post(pending, "/api/auth/patient/verify", {"phone": old, "code": unused_code}).status_code == 400
+    before = len(otp_messages(old))
+    with db.session_scope() as s:
+        for ch in s.scalars(select(OtpChallenge).where(OtpChallenge.phone_e164 == old)).all():
+            ch.created_at = ch.created_at - timedelta(minutes=5)
+    assert api_post(make_client(), "/api/auth/patient/request-code", {"phone": old}).status_code == 202
+    assert len(otp_messages(old)) == before  # nothing sent to the old number
+    # The new number needs a NEW invitation before it can sign in.
+    newp = make_client()
+    api_post(newp, "/api/auth/patient/request-code", {"phone": "+919000000302"})
+    assert otp_messages("+919000000302") == []
+    invite(client, ep["id"])
+    with db.session_scope() as s:
+        for ch in s.scalars(select(OtpChallenge).where(OtpChallenge.phone_e164 == "+919000000302")).all():
+            ch.created_at = ch.created_at - timedelta(minutes=5)
+    api_post(newp, "/api/auth/patient/request-code", {"phone": "+919000000302"})
+    code = latest_otp_code(newp, "+919000000302")
+    assert api_post(newp, "/api/auth/patient/verify", {"phone": "+919000000302", "code": code}).status_code == 200
+    assert newp.get(f"/api/me/episodes/{ep['id']}/today").status_code == 200
+    kinds = [e["kind"] for e in client.get(f"/api/episodes/{ep['id']}/activity").json()]
+    assert "invite.revoked" in kinds
+
+
+# --------------------------------------------------------------------------- ACCEPTANCE A-03 / A-14 / A-12
+def test_unauthenticated_outbox_hides_clinical_messages(client, staff_ids, make_client):
+    from app.models import Message as M
+
+    ep = make_episode(client, staff_ids)
+    with db.session_scope() as s:
+        s.add(M(episode_id=ep["id"], kind="welcome", audience="patient", channel="sms", body="Furosemide 40 mg",
+                mode="simulated", status="simulated", intended_recipient="+919000000101"))
+    anon = make_client()
+    kinds = {m["kind"] for m in anon.get("/api/demo/outbox").json()}
+    assert "welcome" not in kinds
+    assert "welcome" in {m["kind"] for m in client.get("/api/demo/outbox").json()}  # signed-in staff
+
+
+def test_no_demo_phone_redirect_for_otp_outside_demo_mode(client, staff_ids, make_client, monkeypatch):
+    ep = make_episode(client, staff_ids)
+    invite(client, ep["id"])
+    monkeypatch.setattr(settings, "demo_phone", "+919999999999")
+    monkeypatch.setattr(settings, "app_mode", "production")
+    phone = ep["patient"]["phone_e164"]
+    api_post(make_client(), "/api/auth/patient/request-code", {"phone": phone})
+    msg = otp_messages(phone)[-1]
+    assert msg.status == "failed" and "DEMO_PHONE" in (msg.error or "")
+
+
+def test_patient_does_not_see_unapproved_proposed_slot(client, staff_ids, make_client):
+    from app.clock import clock
+    from app.models import FollowUpEvent
+    from tests.test_permissions import _seed_episode_objects
+
+    ep = make_episode(client, staff_ids)
+    invite(client, ep["id"])
+    objs = _seed_episode_objects(ep["id"], staff_ids["dr.mehta"])
+    with db.session_scope() as s:
+        s.add(FollowUpEvent(episode_id=ep["id"], action_id=objs["action"], title="Cardiology review",
+                            status="proposed", start_at=clock.now() + timedelta(days=5), location="OPD 2"))
+    p = make_client()
+    phone = ep["patient"]["phone_e164"]
+    api_post(p, "/api/auth/patient/request-code", {"phone": phone})
+    api_post(p, "/api/auth/patient/verify", {"phone": phone, "code": latest_otp_code(p, phone)})
+    f = p.get(f"/api/me/episodes/{ep['id']}/followups").json()[0]
+    assert f["status"] == "proposed" and f["start_at"] is None and f["location"] is None

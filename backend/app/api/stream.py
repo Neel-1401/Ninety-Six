@@ -71,7 +71,7 @@ async def stream(request: Request, last_event_id: Optional[int] = None, replay_o
     queue = None if replay_only else bus.subscribe()
 
     async def gen():
-        last_sent = since or 0
+        replayed: set[int] = set()
         try:
             yield "retry: 3000\n\n"
             if since is not None:
@@ -84,7 +84,7 @@ async def stream(request: Request, last_event_id: Optional[int] = None, replay_o
                     out = filter_notice(n, is_patient=access.is_patient, episode_ids=access.ids)
                     if out:
                         yield _frame(out)
-                    last_sent = max(last_sent, n["id"])
+                    replayed.add(n["id"])
             if replay_only or queue is None:
                 return
             while True:
@@ -95,11 +95,11 @@ async def stream(request: Request, last_event_id: Optional[int] = None, replay_o
                 except asyncio.TimeoutError:
                     yield ": ping\n\n"
                     continue
-                if n.get("id", 0) <= last_sent:
+                if n.get("id") in replayed:
+                    replayed.discard(n["id"])  # already delivered by the replay
                     continue
                 ids = access.refresh(force=n.get("episode_id") is not None and n.get("episode_id") not in access.ids)
                 out = filter_notice(n, is_patient=access.is_patient, episode_ids=ids)
-                last_sent = n["id"]
                 if out:
                     yield _frame(out)
         finally:

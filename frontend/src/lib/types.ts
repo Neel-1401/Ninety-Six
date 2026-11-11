@@ -618,6 +618,7 @@ export interface PatientFollowUpOut {
   start_at: ISO | null;
   status: FollowUpStatus;
   availability_checked: boolean;
+  calendar_mode: Mode | null;
 }
 
 // ---------------------------------------------------------------- demo

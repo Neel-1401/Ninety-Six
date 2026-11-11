@@ -54,6 +54,11 @@ def send_operational_sms(
     adapter = _adapter()
     mode, status, provider_ref, error = Mode.SIMULATED, MessageStatus.SIMULATED, None, None
     eff = effective_recipient(phone)
+    if not settings.demo_mode and eff != phone:
+        # Outside demo mode a redirect would turn one phone into a sign-in device for every patient.
+        log.error("Refusing operational SMS: DEMO_PHONE redirect is not allowed outside demo mode")
+        adapter = None
+        status, error = MessageStatus.FAILED, "Not sent: DEMO_PHONE redirect is not allowed outside demo mode"
     if adapter is not None:
         try:
             res = adapter.execute({"to": phone, "body": body, "channel": "sms"}, idempotency_key=idempotency_key)
