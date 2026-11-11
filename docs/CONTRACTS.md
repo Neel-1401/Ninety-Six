@@ -76,7 +76,7 @@ unauthenticated → **401**. Demo endpoints outside demo mode → **404 `demo_di
   `POST /api/auth/logout` revokes. `GET /api/auth/me` → `MeOut` or 401.
 * CSRF: every non-GET `/api/**` request must send header `X-Requested-With: ninety-six`
   (frontend client does this); otherwise 403. CORS allows only `FRONTEND_ORIGIN` with credentials.
-* **Demo mode** (`APP_MODE=demo`, default for local): `/api/demo/**` enabled — role switching
+* **Demo mode** (explicit `APP_MODE=demo`; unset defaults to production): `/api/demo/**` enabled — role switching
   (`login-as`), simulated outbox showing OTP codes, clock advance, reset. In `APP_MODE=production`
   every `/api/demo/**` route returns 404 and OTP bodies are redacted in storage.
 
@@ -205,8 +205,9 @@ ToolStatusOut  {name, label, mode, configured, detail, last_live_success_at|null
 | `GET /api/health` | – | `{ok:true, mode}` (public) |
 
 Idempotency: repeating approve/edit-approve/reject with the same inputs after success returns the
-current `ActionOut` with `200` and creates **no** additional decision or execution. Approve on an
-action that is no longer pending → `409 invalid_state`.
+current `ActionOut` with `200` and creates **no** additional decision or execution. Decisions may
+change a pending/approved/routine action only while execution is `not_started`; incompatible
+terminal decisions or changes after execution starts return `409 invalid_state`.
 
 ### 4.3 Patient endpoints (role patient; own episodes only)
 
@@ -357,7 +358,7 @@ execution `unknown`, `ReviewItem(unknown_outcome)`, **no automatic retry**; staf
 Idempotency keys: action `ep{episode}-{step_key}-v{payload_version}`; Google Calendar uses a
 deterministic event id so a retry cannot double-book.
 
-**Restart recovery** (worker start): `running` tasks with expired lease → if a `pending`
+**Restart recovery** (single-worker start): `running` tasks owned by another process, or with an expired lease → if a `pending`
 ToolExecution exists for a side-effecting action → mark `unknown` + review item; internal tasks →
 back to `ready`.
 
@@ -409,7 +410,8 @@ notice as "invalidate these query scopes and refetch"; after any reconnect they 
 
 `from app.clock import clock` → `clock.now()` (aware UTC, simulated), `clock.real_now()` (security
 timers), `clock.advance(session, hours)` / `clock.reset(session)` (demo only; caller commits),
-`clock.load(session)` (startup and each worker tick). UI displays Asia/Kolkata, 12-hour times.
+`clock.load(session)` at worker startup only; the in-process clock remains authoritative during ticks
+so a tick cannot rewind a concurrently advancing clock. UI displays Asia/Kolkata, 12-hour times.
 
 ## 10. Frontend shared system (lead-owned, `frontend/src/ui`, `frontend/src/lib`)
 
@@ -461,6 +463,15 @@ timers), `clock.advance(session, hours)` / `clock.reset(session)` (demo only; ca
   instruction` with `review_state=confirmed` and `active=True` (set `patient_visible=True` at activation).
 
 ## 12. Changes after the evaluator's architecture review (11 Nov 2026)
+
+Recovery verification adds: external execution preparation reserves the SQLite writer with
+`BEGIN IMMEDIATE`, validates the claimed task and approval again, and atomically records RUNNING
+and the pending execution before releasing the transaction for the provider call. Rejection or
+revocation before preparation prevents the call; once execution is committed as running it is no
+longer cancellable through a decision edit. Successful patient replies set the originating
+`CheckIn.response_message_id` without claiming staff review. Execution notices invalidate both
+`approvals` and `checkins`. Patient receipt screens show reviewed warning signs, contact numbers
+and the submitted free text for all triage levels, using existing patient-only instruction APIs.
 
 * `APP_MODE` defaults to **production**; demo must be explicitly enabled (`.env.example` sets it).
 * `audit_event` uses SQLite AUTOINCREMENT (ids never reused after a demo reset). SSE clients recreate

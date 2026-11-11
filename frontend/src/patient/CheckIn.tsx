@@ -12,8 +12,8 @@ import { fmtDateTime } from "../lib/format";
 import { qk } from "../lib/queryKeys";
 import type { PatientCheckInOut, Question } from "../lib/types";
 import { Banner, Button, cn, EmptyState, TextArea } from "../ui";
-import { store, useEpisode, useMyCheckin } from "./data";
-import { EmergencyLine, LoadError, LoadingBlock, PageTitle, Panel, ReceiptStages } from "./parts";
+import { store, useEpisode, useInstructions, useMyCheckin } from "./data";
+import { ContactBlock, EmergencyLine, LoadError, LoadingBlock, PageTitle, Panel, ReceiptStages } from "./parts";
 
 interface LocalDraft {
   answers: Record<string, string>;
@@ -462,6 +462,8 @@ function Wizard({ checkin, emergency }: { checkin: PatientCheckInOut; emergency:
 
 // ------------------------------------------------------------------ receipt view
 export function SubmittedView({ checkin }: { checkin: PatientCheckInOut }) {
+  const { episode, episodeId } = useEpisode();
+  const instructions = useInstructions(episodeId);
   return (
     <div className="flex flex-col gap-5">
       <Banner tone="success" title="Your answers were received" live>
@@ -470,6 +472,18 @@ export function SubmittedView({ checkin }: { checkin: PatientCheckInOut }) {
       <Panel>
         <ReceiptStages receipt={checkin.receipt} />
       </Panel>
+      <section aria-label="Warning signs and contacts">
+        <h2 className="mb-2 text-lg font-bold">While you wait for your care team</h2>
+        {instructions.data?.reviewed && instructions.data.warning_signs.length > 0 && (
+          <Panel className="mb-3">
+            <h3 className="font-bold">Warning signs from your reviewed instructions</h3>
+            <ul className="mt-2 list-disc space-y-1 pl-5">
+              {instructions.data.warning_signs.map((item, index) => <li key={`${item.source_ref}-${index}`}>{item.text}</li>)}
+            </ul>
+          </Panel>
+        )}
+        <ContactBlock hospitalPhone={episode?.hospital_phone ?? "Contact your hospital care team"} emergency={episode?.emergency_number ?? "108"} />
+      </section>
       {checkin.answers.length > 0 && (
         <section>
           <h2 className="mb-2 text-lg font-bold">What you sent</h2>
@@ -481,6 +495,12 @@ export function SubmittedView({ checkin }: { checkin: PatientCheckInOut }) {
               </div>
             ))}
           </dl>
+        </section>
+      )}
+      {checkin.free_text && (
+        <section>
+          <h2 className="mb-2 text-lg font-bold">Your additional concern</h2>
+          <Panel><p className="whitespace-pre-wrap break-words">{checkin.free_text}</p></Panel>
         </section>
       )}
       <Link

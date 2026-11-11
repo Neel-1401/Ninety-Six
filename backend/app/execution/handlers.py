@@ -117,8 +117,23 @@ def _redacted(a: ProposedAction) -> dict[str, Any]:
 def handle_execute_action(task_id: int) -> None:
     # --- prepare (transaction 1)
     with db.session_scope() as s:
+        # Reserve SQLite's writer before reading policy state. Final validation,
+        # RUNNING and the execution record must commit atomically with respect
+        # to rejection, revocation, contact edits and replanning.
+        if s.get_bind().dialect.name == "sqlite":
+            s.connection().exec_driver_sql("BEGIN IMMEDIATE")
         t = s.get(ScheduledTask, task_id)
+        if t is None or t.status != TaskStatus.RUNNING or t.claimed_by != WORKER_ID:
+            return
+        status, reason, override = preflight(s, t, clock.now())
+        if status != TaskStatus.READY:
+            t.status = TaskStatus.READY
+            apply_status(s, t, status, reason, override)
+            _release(t)
+            return
         a = s.get(ProposedAction, t.action_id)
+        if a.execution_state != ExecutionState.NOT_STARTED:
+            return
         tool = TOOL_FOR_ACTION[a.action_type]
         a.execution_state = ExecutionState.RUNNING
         ex = ToolExecution(
@@ -180,6 +195,12 @@ def handle_execute_action(task_id: int) -> None:
             if msg is not None:
                 msg.status = MessageStatus.SIMULATED if result.mode == "simulated" else MessageStatus.PROVIDER_ACCEPTED
                 msg.sent_at, msg.error = now, None
+                if msg.patient_visible:
+                    step = s.get(PlanStep, t.step_id)
+                    checkin_id = (step.arguments or {}).get("checkin_id") if step else None
+                    checkin = s.get(CheckIn, checkin_id) if checkin_id else None
+                    if checkin is not None and checkin.episode_id == a.episode_id:
+                        checkin.response_message_id = msg.id
             if fu is not None:
                 fu.status = FollowUpStatus.CALENDAR_EVENT_CREATED
                 fu.calendar_mode, fu.external_ref = result.mode, result.provider_ref
@@ -227,7 +248,7 @@ def handle_execute_action(task_id: int) -> None:
             episode_id=a.episode_id, actor_type="worker", actor_label="Ninety-Six executor",
             detail={"execution_id": ex.id, "action_id": a.id, "outcome": result.outcome, "mode": result.mode,
                     "provider_ref": result.provider_ref, "delivery_status": result.delivery_status},
-            scopes=["executions", "plan", "actions", "messages", "followups", "overview", "reviews", "today"],
+            scopes=["executions", "plan", "actions", "approvals", "messages", "followups", "overview", "reviews", "today", "checkins"],
             patient_visible=a.recipient_role in ("patient", "calendar"),
         )
         record_event(s, kind, f"{kind.split('.')[1]}: {title}", episode_id=a.episode_id, actor_type="worker",

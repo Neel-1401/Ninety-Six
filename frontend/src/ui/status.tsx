@@ -231,7 +231,7 @@ export function PriorityBadge({ priority }: { priority: "urgent" | "high" | "nor
         High priority
       </Badge>
     );
-  return <Badge tone="neutral">Routine priority</Badge>;
+  return <Badge tone="neutral">Normal priority</Badge>;
 }
 
 export function RiskBadge({ category }: { category: string | null | undefined }) {

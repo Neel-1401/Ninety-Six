@@ -561,6 +561,7 @@ export interface PatientCheckInOut {
   draft: { answers: Record<string, string>; free_text: string | null } | null;
   submitted_at: ISO | null;
   answers: { question_id: string; question_text: string; label: string }[];
+  free_text: string | null;
   receipt: CheckInReceipt;
 }
 

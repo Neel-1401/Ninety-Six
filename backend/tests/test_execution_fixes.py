@@ -71,6 +71,68 @@ class _LiveModeMessaging:
         raise AssertionError("must not be called: approval was given for SIMULATED mode")
 
 
+@pytest.mark.parametrize("decision", ["reject", "revoke"])
+def test_decision_between_dispatch_and_prepare_prevents_send(session, monkeypatch, decision):
+    from app.execution import handlers
+
+    ids = setup_active()
+    with db.session_scope() as s:
+        action = action_by_key(s, ids["episode"], "welcome_message")
+        aid = action.id
+        if decision == "reject":
+            ops.approve_action(s, aid, payload_hash=action.payload_hash, doctor=s.get(User, ids["doctor"]))
+        else:
+            action = action_by_key(s, ids["episode"], "reminder_24")
+            assert action is not None and action.approval_state == ApprovalState.ROUTINE
+            aid = action.id
+            clock.advance(s, 24)
+
+    prepare = handlers.HANDLERS["execute_action"]
+    intercepted = []
+
+    def reject_before_prepare(task_id):
+        with db.session_scope() as s:
+            task = s.get(ScheduledTask, task_id)
+            if task.action_id == aid and not intercepted:
+                action = s.get(ProposedAction, aid)
+                if decision == "reject":
+                    ops.reject_action(s, aid, base_payload_hash=action.payload_hash,
+                                      reason="Withdrawn before provider call", doctor=s.get(User, ids["doctor"]))
+                else:
+                    ops.revoke_routine(s, action.routine_authorisation_id,
+                                       reason="Withdrawn before provider call", doctor=s.get(User, ids["doctor"]))
+                intercepted.append(aid)
+        prepare(task_id)
+
+    monkeypatch.setitem(handlers.HANDLERS, "execute_action", reject_before_prepare)
+    run_worker()
+    assert intercepted == [aid]
+    with db.session_scope() as s:
+        assert s.get(ProposedAction, aid).approval_state == (ApprovalState.REJECTED if decision == "reject" else ApprovalState.PENDING)
+        assert count(s, ToolExecution, ToolExecution.action_id == aid) == 0
+
+
+def test_reconciled_reply_updates_patient_receipt(session):
+    from app.models import CheckIn, Message
+    from app.tools.base import ToolResult
+    from tests.test_execution_flow import _FakeMessaging
+
+    registry.set_adapter("messaging", _FakeMessaging(ToolResult("unknown", "live", "twilio", safe_error="timeout")))
+    ids = setup_active()
+    advance(24)
+    cid = submit_checkin(ids["episode"], "red_flag")
+    with db.session_scope() as s:
+        aid = action_by_key(s, ids["episode"], "urgent_safety_").id
+    approve(aid, ids["doctor"])
+    with db.session_scope() as s:
+        assert s.get(CheckIn, cid).response_message_id is None
+        execution = s.scalars(select(ToolExecution).where(ToolExecution.action_id == aid)).one()
+        ops.reconcile_execution(s, execution.id, outcome="success", note="Provider confirmed acceptance", actor=s.get(User, ids["doctor"]))
+        response = s.scalars(select(Message).where(Message.action_id == aid)).one()
+        assert s.get(CheckIn, cid).response_message_id == response.id
+        assert response.status == "provider_accepted"
+
+
 # --------------------------------------------------------------------------- A-05
 def test_a05_mode_change_invalidates_prior_approval(session):
     ids = setup_active()

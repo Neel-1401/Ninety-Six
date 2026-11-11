@@ -15,6 +15,7 @@ from ..events import record_event
 from ..models import (
     ApprovalDecision,
     ApprovalState,
+    CheckIn,
     DischargeEpisode,
     EpisodeStatus,
     ExecutionState,
@@ -266,9 +267,15 @@ def reconcile_execution(session: Session, execution_id: int, *, outcome: str, no
         a.execution_state = ExecutionState.SUCCEEDED if outcome == "success" else ExecutionState.FAILED
         for m in session.scalars(select(Message).where(Message.action_id == a.id)):
             if m.status == MessageStatus.UNKNOWN:
-                m.status = MessageStatus.PROVIDER_ACCEPTED if outcome == "success" else MessageStatus.FAILED
+                m.status = (MessageStatus.SIMULATED if m.mode == "simulated" else MessageStatus.PROVIDER_ACCEPTED) if outcome == "success" else MessageStatus.FAILED
                 m.error = f"reconciled by {_label(actor)}: {note}"
                 m.status_updated_at = clock.now()
+                if outcome == "success" and m.patient_visible:
+                    step = session.get(PlanStep, a.step_id) if a.step_id else None
+                    checkin_id = (step.arguments or {}).get("checkin_id") if step else None
+                    checkin = session.get(CheckIn, checkin_id) if checkin_id else None
+                    if checkin is not None and checkin.episode_id == a.episode_id:
+                        checkin.response_message_id = m.id
     if t is not None and t.status == TaskStatus.UNKNOWN:
         set_task_status(session, t, TaskStatus.SUCCEEDED if outcome == "success" else TaskStatus.FAILED,
                         f"reconciled by {_label(actor)} as {outcome}")
@@ -280,7 +287,7 @@ def reconcile_execution(session: Session, execution_id: int, *, outcome: str, no
     record_event(session, "tool.executed", f"{_label(actor)} reconciled execution #{ex.id} as {outcome}",
                  episode_id=ex.episode_id, actor_type="user", actor_id=actor.id, actor_label=_label(actor),
                  detail={"execution_id": ex.id, "outcome": outcome, "note": note},
-                 scopes=["executions", "actions", "plan", "reviews", "messages", "overview"], patient_visible=True)
+                 scopes=["executions", "actions", "approvals", "plan", "reviews", "messages", "overview", "checkins", "today"], patient_visible=True)
     return ex
 
 

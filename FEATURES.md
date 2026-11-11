@@ -1,5 +1,12 @@
 # Feature status
 
+## Verification checkpoint — 11 Nov 2026
+
+- Frontend: `npm.cmd run build` passed (TypeScript and Vite production build).
+- Backend: ` .\.venv\Scripts\python.exe -m pytest -q` passed: **87 passed in 78.13s**. The HTTP milestone journey now waits for the asynchronous medication review before fetching the doctor's current plan, matching the activation safety gate.
+- The matrix below predates the implementation commits and needs reconciliation against acceptance evidence. Its Planned cells are not an accurate inventory of the current code.
+- Live providers, browser acceptance journeys, and clean-machine setup have not been verified in this checkpoint.
+
 Four separate columns, updated by the lead from evidence only:
 
 - **Planned** — in scope, not built yet.

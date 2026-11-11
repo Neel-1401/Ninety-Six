@@ -67,6 +67,10 @@ def test_milestone1_flow(client, staff_ids, make_client):
     plan = client.get(f"/api/episodes/{eid}/plans/current").json()
     assert plan["status"] == "draft" and plan["steps"]
 
+    # The medication lookup runs asynchronously and may replace the draft plan.
+    # Finish it before the doctor reads and activates the current version.
+    _run_worker()
+
     # ---- doctor reviews extraction + plan and activates with a bounded routine scope
     doc = make_client()
     login_staff(doc, "dr.mehta")
@@ -136,7 +140,10 @@ def test_milestone1_flow(client, staff_ids, make_client):
     assert due is not None, "no check-in became due"
     assert due["questions"]
 
-    answers = [{"question_id": q["id"], "value": q["options"][0]["value"]}
+    before_response = doc.get(f"/api/episodes/{eid}/plans/current").json()
+    from app.agent.checkin_templates import TEMPLATES
+    red_flag_answers = TEMPLATES["heart_failure_v1"]["presets"]["red_flag"]
+    answers = [{"question_id": q["id"], "value": red_flag_answers[q["id"]]}
                for q in due["questions"] if q["type"] in ("single_choice", "yes_no")]
     sub_id = str(uuid.uuid4())
     r = api_post(p, f"/api/me/checkins/{due['id']}/submit", {"submission_id": sub_id, "answers": answers, "free_text": None})
@@ -150,3 +157,45 @@ def test_milestone1_flow(client, staff_ids, make_client):
     after = p.get(f"/api/me/checkins/{due['id']}").json()
     assert after["receipt"]["agent_processing"] == "complete"
     assert after["receipt"]["staff_review"] != "reviewed"
+
+    # A concerning website reply must change persisted plans and require a new
+    # payload-bound doctor decision, even with routine reminders authorised.
+    revised = doc.get(f"/api/episodes/{eid}/plans/current").json()
+    assert revised["version"] > before_response["version"]
+    assert revised["trigger"] == "patient_response" and revised["change_summary"]
+    staff_checkin = next(c for c in client.get(f"/api/episodes/{eid}/checkins").json() if c["id"] == due["id"])
+    assert staff_checkin["triage_level"] == "urgent"
+    assert staff_checkin["processing_state"] == "processed"
+    pending = [a for a in doc.get("/api/approvals").json()
+               if a["episode_id"] == eid and a["priority"] == "urgent"
+               and a["action_type"] == "send_message" and a["recipient_role"] == "patient"]
+    assert pending
+    response = pending[0]
+    assert response["approval_state"] == "pending" and response["approval_requirement"] == "explicit"
+    assert not [m for m in p.get(f"/api/me/episodes/{eid}/messages").json() if m["body"] == response["payload"]["body"]]
+    assert api_post(client, f"/api/actions/{response['id']}/approve", {"payload_hash": response["payload_hash"]}).status_code == 403
+    for _ in range(2):
+        approved = api_post(doc, f"/api/actions/{response['id']}/approve", {"payload_hash": response["payload_hash"]})
+        assert approved.status_code == 200, approved.text
+    _run_worker()
+    _run_worker()
+    executions = [e for e in doc.get(f"/api/episodes/{eid}/executions").json() if e["action_id"] == response["id"]]
+    assert len(executions) == 1 and executions[0]["outcome"] == "success" and executions[0]["mode"] == "simulated"
+    # Execution must refresh the approval cards and patient receipt without a reload.
+    from app import db
+    from app.models import AuditEvent
+    from sqlalchemy import select
+    with db.session_scope() as session:
+        notices = session.scalars(select(AuditEvent).where(AuditEvent.episode_id == eid, AuditEvent.kind == "tool.executed")).all()
+        assert notices and all({"approvals", "checkins"} <= set(n.scopes) for n in notices if "messages" in n.scopes)
+    nurse_messages = client.get(f"/api/episodes/{eid}/messages").json()
+    doctor_messages = doc.get(f"/api/episodes/{eid}/messages").json()
+    assert nurse_messages == doctor_messages
+    sent = [m for m in doctor_messages if m["action_id"] == response["id"]]
+    assert len(sent) == 1 and sent[0]["status"] == "simulated"
+    patient_messages = p.get(f"/api/me/episodes/{eid}/messages").json()
+    assert len([m for m in patient_messages if m["id"] == sent[0]["id"]]) == 1
+    final_receipt = p.get(f"/api/me/checkins/{due['id']}").json()["receipt"]
+    assert final_receipt["response_available"] is True
+    assert final_receipt["response_message_id"] == sent[0]["id"]
+    assert final_receipt["staff_review"] != "reviewed"
