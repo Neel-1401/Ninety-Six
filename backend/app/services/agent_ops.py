@@ -136,6 +136,21 @@ def activate_plan(
     missing = [f.id for f in required if f.id not in confirm]
     if missing:
         raise errors.validation("Confirm every extracted fact before activating.", {"unconfirmed_fact_ids": missing})
+    # Non-English patient: AI-translate the welcome message BEFORE any write (English original kept in
+    # the approval card; still needs the doctor's approval). English patients never touch the LLM here.
+    from ..agent import drafting
+    from ..llm import router
+
+    pt = session.get(Patient, episode.patient_id)
+    translation_traces = []
+    if pt is not None and not router.is_english(pt.preferred_language):
+        if router.should_use_llm("translate", {"template_id": "welcome_v1", "language": pt.preferred_language}):
+            session.commit()  # A-08: no write lock held during the network call
+        try:
+            translation_traces = drafting.prewarm(episode.id, ["welcome_v1"], confirmed_only=False)
+        except Exception:  # noqa: BLE001 - template is the fallback
+            translation_traces = []
+    drafting.trace_all(session, episode.id, translation_traces)
     now = clock.now()
     for f in facts:
         if f.category in CLINICAL_CATEGORIES and f.source_kind != FactSourceKind.INFERRED:

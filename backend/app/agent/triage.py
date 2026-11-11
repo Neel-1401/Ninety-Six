@@ -89,17 +89,24 @@ TRIAGE_SYSTEM = (
 )
 
 
-def llm_triage(context: str) -> Optional[dict[str, Any]]:
+def llm_triage(context: str, result_out: Optional[list] = None) -> Optional[dict[str, Any]]:
     if not llm.is_configured():
         return None
     res = llm.structured(TRIAGE_SYSTEM, context, LLMTriage, purpose="triage")
+    if result_out is not None:
+        result_out.append(res)
     if not res.ok or res.data is None:
         return {"error": res.error, "provider": res.provider}
     return {"level": res.data.level, "reasons": list(res.data.reasons), "provider": res.provider}
 
 
+def route_context(rules: dict[str, Any], free_text: Optional[str]) -> dict[str, Any]:
+    return {"rules_level": rules["level"], "free_text": free_text,
+            "keyword_lists": [GENERAL_URGENT, GENERAL_CONCERN]}
+
+
 def combine(rules: dict[str, Any], llm_out: Optional[dict[str, Any]]) -> dict[str, Any]:
-    """Rules can only be raised by the LLM, never lowered."""
+    """Final level = max(rules, LLM). The LLM can raise the rules' level, never lower it."""
     out = dict(rules)
     out["source"] = "rules"
     if llm_out and "level" in llm_out:

@@ -4,7 +4,7 @@ import { ArrowRight, GitCompare, Minus, Plus, RefreshCw } from "lucide-react";
 import { useMemo, useState } from "react";
 import { fmtDateTime, fmtTPlus } from "../../lib/format";
 import type { PlanStepOut, PlanVersionOut } from "../../lib/types";
-import { Badge, Banner, Select, StatusBadge, cn } from "../../ui";
+import { Badge, Banner, Select, SourceBadge, StatusBadge, cn } from "../../ui";
 import { actionLabel, stepMessageBody, stepTemplateId, TEMPLATE_LABEL, TRIGGER_LABEL } from "../util";
 
 const REQ_LABEL: Record<string, string> = {
@@ -74,7 +74,13 @@ export function PlanStepsTable({ steps, highlightKeys }: { steps: PlanStepOut[];
                   <span className="block text-muted">{fmtDateTime(s.due_at)}</span>
                 </td>
                 <td className="px-3 py-2.5">
-                  <span className="font-bold">{s.title}</span>
+                  <span className="inline-flex flex-wrap items-center gap-1.5">
+                    <span className="font-bold">{s.title}</span>
+                    <SourceBadge
+                      ai={s.origin === "ai"}
+                      title={s.origin === "ai" ? "Condition-specific step suggested by the AI; validated (tool, timing, arguments) before it was added" : "From the deterministic rule plan"}
+                    />
+                  </span>
                   {s.purpose && <span className="block text-muted">{s.purpose}</span>}
                   {tpl && <span className="block text-xs text-muted">Template: {TEMPLATE_LABEL[tpl] ?? tpl}</span>}
                   {body && <span className="mt-1 block max-w-[70ch] whitespace-pre-wrap rounded bg-sunken px-2 py-1 text-xs">{body}</span>}

@@ -23,6 +23,20 @@ The job lasts four days. It means waiting, sending scheduled check-ins, reacting
 | **Memory** | Confirmed facts (diagnosis, medicines, red flags, reported symptoms) carry provenance. The agent re-reads them at every step and logs each use. |
 | **Safe by default** | The LLM only *proposes*: deterministic code validates plans and authorises actions. Rules can only **raise** a triage level, never lower it. It is not diagnostic and never changes doses. |
 
+## How the AI is used
+**Hybrid AI, rules first:** deterministic rules handle everything simple and safety-critical (timing, templated check-ins, risk score, approval gates, interaction table + openFDA, red-flag keywords); the LLM is called only where it adds value (weak summary parsing, condition-specific plan additions, long or unrecognised free-text triage that can only *raise* the level, concern/red-flag reply drafts and translations that are still approved, the 96-hour clinical note), with an 8 s timeout, schema validation, one retry and a rule fallback.
+
+| Task | Who decides | When the AI is called |
+|---|---|---|
+| Scheduling, check-in templates, reminders, risk score, approval gates, interaction table + openFDA, red-flag keywords | **Rules only** | Never |
+| Reading the discharge summary | Regex parser | Only if it finds no medicines, no diagnosis or no red flags, or the summary isn't in section format. AI items are **merged** in and must cite a real line. |
+| Planning | Rule plan (base) | AI may **add** up to 3 condition-specific steps (extra check-in or a care-team task) with a rationale. Each is validated (tool exists, due 0–96 h, args valid); invalid ones are dropped. |
+| Triage | Rules | If rules say red flag, it stays red flag and the AI isn't asked. Otherwise the AI reads free text longer than a few words or with no known pattern. Final level = max(rules, AI). |
+| Replies | Templates | AI drafts concern / red-flag replies and translates for non-English patients (English original shown). Always doctor-approved; priority unchanged. |
+| 96-hour summary | Template note | AI writes the clinical note; the template is the fallback. |
+
+Every decision is written to the activity trace ("AI used: triage (gemini-3.1-flash-lite, 812 ms)" / "Rules used: …" / "AI failed → rules fallback"), and the UI tags plan steps, triage results, drafted messages and the summary note **AI** or **Rules**. Guardrails: one router (`backend/app/llm/router.py`), 8 s hard timeout, strict JSON schema, at most 1 retry, prompt-hash cache, and an instant off switch on the Settings page (or `LLM_PROVIDER=mock`).
+
 ## Architecture
 ```
 React 19 + Vite + Tailwind UI (hospital app + patient app)
@@ -67,7 +81,7 @@ Credentials go in `backend\.env` only (git-ignored; `scripts\setup.ps1` creates 
 | Care-team email (Gmail) | `SMTP_HOST=smtp.gmail.com`, `SMTP_PORT=587`, `SMTP_USER`, `SMTP_PASSWORD` (a [Gmail app password](https://myaccount.google.com/apppasswords), needs 2-Step Verification), `CARE_TEAM_EMAIL` | **Live** |
 | Twilio SMS | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM`, `DEMO_PHONE` | Simulated. A trial works; `DEMO_PHONE` must be a number verified in Twilio, and every patient/caregiver message is redirected to it. |
 | Google Calendar | `GOOGLE_SERVICE_ACCOUNT_FILE`, `GOOGLE_CALENDAR_ID` | Simulated. Share the calendar with the service-account email. |
-| LLM | `LLM_PROVIDER=anthropic` + `ANTHROPIC_API_KEY`, or `gemini` + `GEMINI_API_KEY` | Rules (mock). Every call has a rule-based fallback. |
+| LLM | `LLM_PROVIDER=gemini` + `GEMINI_API_KEY` (+ `GEMINI_MODEL`, default `gemini-3.1-flash-lite`), or `anthropic` + `ANTHROPIC_API_KEY` | **Live-verified with Gemini** (12 Nov); `.env.example` keeps `mock` (rules only). Every call has a rule-based fallback. |
 
 Check each configured integration once (it sends one test email or SMS to your own test recipient and prints the provider reference):
 ```powershell
@@ -77,7 +91,7 @@ The Settings page (`/api/settings`) shows each tool's mode.
 
 ## Tests
 ```powershell
-cd backend; .\.venv\Scripts\python.exe -m pytest -q      # 90 tests
+cd backend; .\.venv\Scripts\python.exe -m pytest -q      # 105 tests
 cd ..\frontend; npm.cmd run build
 ```
 

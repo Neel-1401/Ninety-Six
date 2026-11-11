@@ -69,7 +69,7 @@ class MedicationReviewArgs(BaseModel, extra="forbid"):
 
 
 class StaffReviewArgs(BaseModel, extra="forbid"):
-    kind: Literal["medication_review"] = "medication_review"
+    kind: Literal["medication_review", "care_task"] = "medication_review"
     title: str
     summary: str = ""
     requires_role: Literal["doctor", "any"] = "doctor"

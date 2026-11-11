@@ -65,33 +65,56 @@ def test_extraction_keeps_sources_and_marks_missing(session):
         assert ep.risk_category in ("low", "medium", "high") and ep.risk_reasons is not None
 
 
+PROSE_SUMMARY = "\n".join([
+    "Discharge note (fictional).",
+    "He was treated for acute decompensated heart failure (NYHA III).",
+    "He goes home on furosemide 40 mg once daily.",
+    "Review in cardiology clinic with Dr. Mehta within 7 days.",
+])
+
+
 def test_ungrounded_llm_extraction_items_are_dropped(session, fake_llm):
+    """Hybrid: a prose summary (no sections) is a WEAK regex result -> AI consulted; ungrounded AI items dropped."""
     from app.agent.extraction import LLMExtraction, _FollowUp, _Item, _Med
+    from app.models import DischargeDocument
 
     def fn(system, user, schema, purpose):
         if purpose == "extraction":
             data = LLMExtraction(
                 diagnosis=[_Item(text="Acute decompensated heart failure (NYHA III)", line=2)],
-                medications=[_Med(name="Furosemide", dose="40 mg", frequency="once daily", line=6),
-                             _Med(name="Warfarin", dose="5 mg", frequency="daily", line=6)],  # invented
-                follow_up=[_FollowUp(title="Cardiology clinic review", provider="Dr. Mehta", within_days=7, line=16)],
+                medications=[_Med(name="Furosemide", dose="40 mg", frequency="once daily", line=3),
+                             _Med(name="Warfarin", dose="5 mg", frequency="daily", line=3)],  # invented
+                follow_up=[_FollowUp(title="Cardiology clinic review", provider="Dr. Mehta", within_days=7, line=4)],
             )
             return llm.LLMResult(True, "anthropic", "m", data=data)
         return llm.LLMResult(False, "anthropic", "m", error="test")
 
-    fake_llm(fn)
+    calls = fake_llm(fn)
     with db.session_scope() as s:
         doctor, nurse = make_staff(s)
         ep = make_episode(s, nurse, doctor)
+        s.scalars(select(DischargeDocument).where(DischargeDocument.episode_id == ep.id)).first().text = PROSE_SUMMARY
         ops.run_extraction(s, ep, actor=nurse)
         eid = ep.id
+    assert "extraction" in calls
     with db.session_scope() as s:
         meds = s.scalars(select(PatientFact).where(PatientFact.episode_id == eid, PatientFact.category == "medication",
                                                    PatientFact.active.is_(True))).all()
         assert [m.value["name"] for m in meds] == ["Furosemide"]
         ep = s.get(DischargeEpisode, eid)
-        assert ep.extraction_method == "llm:anthropic"
+        assert ep.extraction_method == "rules+llm:anthropic"
         assert any("Warfarin" in n for n in ep.extraction_notes)
+        assert s.scalars(select(AuditEvent).where(AuditEvent.episode_id == eid, AuditEvent.kind == "ai.used")).first()
+
+
+def test_strong_regex_result_never_calls_llm_for_extraction(session, fake_llm):
+    calls = fake_llm(lambda *a: llm.LLMResult(False, "anthropic", "m", error="should not be called"))
+    with db.session_scope() as s:
+        doctor, nurse = make_staff(s)
+        ep = make_episode(s, nurse, doctor)
+        ops.run_extraction(s, ep, actor=nurse)
+        assert ep.extraction_method == "rules"
+    assert "extraction" not in calls
 
 
 def test_invalid_llm_plan_is_rejected_and_fallback_is_visible(session, fake_llm):

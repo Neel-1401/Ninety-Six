@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import APIRouter, Depends
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -139,6 +140,28 @@ def get_settings(actor: Actor = Depends(require_staff)):
         "demo_phone_redirect": {"active": bool(settings.demo_phone), "masked": mask_phone(settings.demo_phone)},
         "worker": {"enabled": settings.worker_enabled, "last_tick_at": _worker_last_tick()},
     }
+
+
+class LLMToggle(BaseModel):
+    enabled: bool
+
+
+@router.post("/settings/llm")
+def toggle_llm(body: LLMToggle, session: Session = Depends(get_db), actor: Actor = Depends(require_staff)):
+    """Instant AI kill switch (rules only). Any staff in demo mode; doctors only otherwise.
+    Turning it back on only works if LLM_PROVIDER + key are set in backend/.env."""
+    from .. import errors, llm
+    from ..events import record_event
+
+    if not settings.demo_mode and actor.role != "doctor":
+        raise errors.forbidden("Only a doctor can switch the AI on or off.")
+    llm.set_enabled(None if body.enabled else False)
+    record_event(session, "ai.toggled", f"{actor.user.display_name} switched AI {'ON' if body.enabled else 'OFF'}"
+                 + ("" if llm.is_configured() or not body.enabled else " (no key configured: rules only)"),
+                 actor_type="user", actor_id=actor.id, actor_label=actor.user.display_name,
+                 detail={"enabled": body.enabled, "llm": llm.status()}, scopes=["clock"])
+    session.commit()
+    return _llm_status()
 
 
 @router.get("/overview")

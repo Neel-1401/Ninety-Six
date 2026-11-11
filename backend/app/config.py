@@ -60,8 +60,8 @@ class Settings:
         self.anthropic_api_key = env("ANTHROPIC_API_KEY", "")
         self.anthropic_model = env("ANTHROPIC_MODEL", "claude-sonnet-5-5")
         self.gemini_api_key = env("GEMINI_API_KEY", "")
-        self.gemini_model = env("GEMINI_MODEL", "gemini-2.5-flash")
-        self.llm_timeout = _float("LLM_TIMEOUT", 40)
+        self.gemini_model = env("GEMINI_MODEL", "gemini-3.1-flash-lite")
+        self.llm_timeout = _float("LLM_TIMEOUT", 8)  # hard-capped at 8 s in app.llm
 
         # Messaging: Twilio SMS first (WhatsApp sandbox optional)
         self.twilio_sid = env("TWILIO_ACCOUNT_SID", "")

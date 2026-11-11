@@ -206,6 +206,11 @@ def render_action_fields(
         extra = {"checkin_title": args.get("checkin_title") or "check-in"}
         ctx = mt.build_context(session, episode, confirmed_only=True, extra=extra)
         payload = mt.render(args["template_id"], ctx)
+        if role == "patient":  # AI draft/translation prepared earlier (network-free lookup; template if none)
+            from .drafting import overlay
+
+            payload = overlay(args["template_id"], payload, language=p.preferred_language,
+                              checkin_id=args.get("checkin_id"))
         return {
             "recipient_role": role, "intended_recipient": intended, "effective_recipient": effective,
             "channel": args.get("channel") or settings.twilio_channel or "sms", "template_id": args["template_id"],

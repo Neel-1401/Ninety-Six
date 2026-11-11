@@ -22,6 +22,7 @@ import {
   TextArea,
   TextInput,
   useToast,
+  SourceBadge,
 } from "../../ui";
 import { actionsApi, invalidateScopes } from "../hooks";
 import { actionLabel, RECIPIENT_LABEL, TEMPLATE_LABEL } from "../util";
@@ -441,7 +442,10 @@ function PayloadView({ a }: { a: ActionOut }) {
     );
   }
   const body = typeof p.body === "string" ? p.body : null;
-  const rest = Object.entries(p).filter(([k]) => k !== "body" && k !== "subject");
+  const aiDraft = p.drafted_by === "ai";
+  const english = typeof p.body_en === "string" ? p.body_en : null;
+  const hidden = new Set(["body", "subject", "drafted_by", "ai_model", "ai_task", "body_en", "language"]);
+  const rest = Object.entries(p).filter(([k]) => !hidden.has(k));
   return (
     <div className="mt-3">
       {typeof p.subject === "string" && (
@@ -450,10 +454,27 @@ function PayloadView({ a }: { a: ActionOut }) {
           <span className="font-bold">{p.subject}</span>
         </p>
       )}
+      {a.action_type !== "create_calendar_event" && (
+        <p className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-muted">
+          <SourceBadge
+            ai={aiDraft}
+            title={aiDraft ? `Drafted by ${String(p.ai_model ?? "the AI")} (${String(p.ai_task ?? "draft")}); checked by rules; still needs your approval` : "Fixed, reviewed template"}
+          />
+          {aiDraft
+            ? `AI ${String(p.ai_task ?? "draft").replace("+", " + ")}${p.language ? ` · ${String(p.language)}` : ""} · ${String(p.ai_model ?? "")}`
+            : "Template"}
+        </p>
+      )}
       {body != null && (
         <blockquote className="mt-1 whitespace-pre-wrap rounded-md border border-line bg-sunken/60 px-3 py-2 text-[15px] leading-relaxed text-ink">
           {body}
         </blockquote>
+      )}
+      {english != null && (
+        <div className="mt-2">
+          <p className="text-xs font-bold text-muted">English original (what the translation should say)</p>
+          <blockquote className="mt-1 whitespace-pre-wrap rounded-md border border-dashed border-line px-3 py-2 text-sm text-ink">{english}</blockquote>
+        </div>
       )}
       {rest.length > 0 && (
         <dl className="mt-2 grid grid-cols-[max-content_1fr] gap-x-3 text-xs text-muted">

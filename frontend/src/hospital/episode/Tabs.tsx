@@ -23,6 +23,7 @@ import {
   TextArea,
   cn,
   useToast,
+  SourceBadge,
 } from "../../ui";
 import { ReconcileDialog } from "../approvals/ActionCard";
 import {
@@ -114,6 +115,12 @@ function CheckinCard({ c, episodeId }: { c: CheckInOut; episodeId: number }) {
             <Badge tone={triageTone} title={`Source: ${c.triage_source ?? "unknown"}`}>
               Triage: {c.triage_level}
             </Badge>
+          )}
+          {c.triage_level && (
+            <SourceBadge
+              ai={(c.triage_source ?? "").startsWith("llm:")}
+              title={(c.triage_source ?? "").startsWith("llm:") ? `AI read the free text (can only raise the level): ${c.triage_source}` : `Rules: ${c.triage_source ?? "rules"}`}
+            />
           )}
           {c.status === "submitted" && <StatusBadge domain="staffReview" value={c.staff_review_state} />}
         </div>

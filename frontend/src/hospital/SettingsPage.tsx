@@ -1,11 +1,21 @@
 // Settings (Agent C): honest view of modes. LIVE only when a real provider is configured.
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { PowerOff, Sparkles } from "lucide-react";
+import { api, errorMessage } from "../lib/api";
 import { fmtDateTime } from "../lib/format";
-import { Banner, Card, CardHeader, ErrorState, KeyValue, ModeBadge, PageHeader, Skeleton } from "../ui";
+import { qk } from "../lib/queryKeys";
+import type { LlmStatus } from "../lib/types";
+import { Badge, Banner, Button, Card, CardHeader, ErrorState, KeyValue, ModeBadge, PageHeader, Skeleton } from "../ui";
 import { useSettings } from "./hooks";
 
 export default function SettingsPage() {
   const q = useSettings();
   const s = q.data;
+  const qc = useQueryClient();
+  const toggle = useMutation({
+    mutationFn: (enabled: boolean) => api.post<LlmStatus>("/api/settings/llm", { enabled }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.settings() }),
+  });
   return (
     <div>
       <PageHeader title="Settings" description="Tool modes, clock and environment. Credentials stay on the server and are never shown here." />
@@ -34,16 +44,35 @@ export default function SettingsPage() {
             </div>
           </Card>
           <Card>
-            <CardHeader title="Language model" description="The model only proposes structured output; deterministic code validates it and falls back to rules." />
+            <CardHeader
+              title="AI (language model)"
+              description="Hybrid: rules first. The AI is used only for weak summary parsing, condition-specific plan additions, free-text triage (can only raise the level), concern / red-flag reply drafts and translations (always approved), and the 96-hour note."
+            />
             <div className="px-4 py-4">
+              <div className="mb-3 flex flex-wrap items-center gap-2">
+                <Badge tone={s.llm.live ? "primary" : "neutral"} icon={s.llm.live ? Sparkles : PowerOff} className="text-[15px]">
+                  {s.llm.live ? "LIVE" : "OFF"}
+                </Badge>
+                <span className="font-bold">{s.llm.model ?? s.llm.env_model ?? "rules only"}</span>
+                <Button
+                  size="sm"
+                  variant={s.llm.runtime_enabled === false ? "primary" : "secondary"}
+                  disabled={toggle.isPending || (s.llm.runtime_enabled !== false && !s.llm.live)}
+                  onClick={() => toggle.mutate(s.llm.runtime_enabled === false)}
+                >
+                  {s.llm.runtime_enabled === false ? "Turn AI on" : "Turn AI off (rules only)"}
+                </Button>
+              </div>
               <KeyValue
                 items={[
-                  { k: "Provider", v: s.llm.provider },
-                  { k: "Mode", v: <ModeBadge mode={s.llm.mode} /> },
-                  { k: "Model", v: s.llm.model ?? "—" },
-                  { k: "Configured", v: s.llm.configured ? "Yes" : "No — rule-based extraction, planning and triage are used" },
+                  { k: "Provider (env)", v: s.llm.provider },
+                  { k: "Model", v: s.llm.model ?? s.llm.env_model ?? "—" },
+                  { k: "Status", v: s.llm.detail ?? (s.llm.configured ? "Configured" : "Not configured") },
+                  { k: "Guardrails", v: `${s.llm.timeout_seconds ?? 8} s hard timeout · strict JSON schema · max 1 retry · rules fallback · ${s.llm.cache_entries ?? 0} cached calls` },
+                  { k: "Instant off", v: "This switch, or LLM_PROVIDER=mock in backend/.env" },
                 ]}
               />
+              {toggle.isError && <p className="mt-2 text-sm text-urgent-ink">{errorMessage(toggle.error)}</p>}
             </div>
           </Card>
           <Card className="xl:col-span-2">

@@ -493,7 +493,7 @@ export interface SettingsOut {
   display_timezone: string;
   sim_now: ISO;
   sim_offset_hours: number;
-  llm: { provider: string; mode: Mode; model: string | null; configured: boolean };
+  llm: LlmStatus;
   tools: ToolStatusOut[];
   demo_phone_redirect: { active: boolean; masked: string | null };
   worker: { enabled: boolean; last_tick_at: ISO | null };
@@ -655,4 +655,18 @@ export interface LiveNotice {
   episode_id: number | null;
   scopes: string[];
   at: ISO;
+}
+
+export interface LlmStatus {
+  provider: string;
+  mode: Mode;
+  live?: boolean;
+  model: string | null;
+  configured: boolean;
+  env_configured?: boolean;
+  env_model?: string | null;
+  runtime_enabled?: boolean;
+  timeout_seconds?: number;
+  cache_entries?: number;
+  detail?: string;
 }

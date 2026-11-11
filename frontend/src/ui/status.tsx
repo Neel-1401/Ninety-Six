@@ -24,6 +24,8 @@ import {
   Radio,
   Send,
   ShieldCheck,
+  Sparkles,
+  Cog,
   SkipForward,
   Undo2,
   UserCheck,
@@ -255,6 +257,19 @@ export function ModeBadge({ mode }: { mode: "live" | "simulated" | string | null
   return (
     <Badge tone="neutral" icon={FlaskConical} className="border-dashed" title="Recorded locally; no real provider is called">
       SIMULATED
+    </Badge>
+  );
+}
+
+/** Hybrid provenance tag: "AI" (model output that passed validation) vs "Rules" (deterministic). */
+export function SourceBadge({ ai, title, className }: { ai: boolean; title?: string; className?: string }) {
+  return ai ? (
+    <Badge tone="primary" icon={Sparkles} title={title ?? "Written by the language model, validated by rules"} className={cn("!px-1.5 !py-0 text-[11px]", className)}>
+      AI
+    </Badge>
+  ) : (
+    <Badge tone="neutral" icon={Cog} title={title ?? "Deterministic rules / fixed template"} className={cn("!px-1.5 !py-0 text-[11px]", className)}>
+      Rules
     </Badge>
   );
 }

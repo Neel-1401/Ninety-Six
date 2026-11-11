@@ -7,7 +7,7 @@ import { useMe } from "../../lib/auth";
 import { useSimClock } from "../../lib/clock";
 import { fmtDateTime, fmtTPlus } from "../../lib/format";
 import type { EpisodeDetail, PlanStepOut, RoutineOut } from "../../lib/types";
-import { Banner, Button, Card, CardHeader, Dialog, EmptyState, ErrorState, Field, Skeleton, StatusBadge, TabPanel, Tabs, TextArea, useToast } from "../../ui";
+import { Banner, Button, Card, CardHeader, Dialog, EmptyState, ErrorState, Field, Skeleton, SourceBadge, StatusBadge, TabPanel, Tabs, TextArea, useToast } from "../../ui";
 import { ActionCard } from "../approvals/ActionCard";
 import { invalidateScopes, routineApi, useCurrentPlan, useEpisodeActions, useEpisodeReviews, usePlans, useSummary } from "../hooks";
 import { ReviewItemCard } from "../ReviewItemCard";
@@ -336,10 +336,25 @@ function SummaryCard({ ep }: { ep: EpisodeDetail }) {
 }
 
 function SummaryBody({ s }: { s: Record<string, unknown> }) {
-  const entries = Object.entries(s).filter(([k]) => k !== "statement");
+  const entries = Object.entries(s).filter(([k]) => k !== "statement" && k !== "clinical_note");
+  const note = (s.clinical_note ?? null) as { text?: string; by?: string; model?: string | null; ms?: number; open_issues?: string[] } | null;
   return (
     <div className="space-y-3 text-sm">
       {typeof s.statement === "string" && <p className="font-bold">{s.statement}</p>}
+      {note?.text && (
+        <div className="rounded-md border border-line bg-sunken/60 px-3 py-2">
+          <p className="mb-1 flex flex-wrap items-center gap-1.5 font-bold">
+            Clinical note
+            <SourceBadge ai={note.by === "ai"} title={note.by === "ai" ? `Written by ${note.model} in ${note.ms} ms from the record below` : "Template summary (AI off or unavailable)"} />
+          </p>
+          <p className="whitespace-pre-wrap leading-relaxed">{note.text}</p>
+          {(note.open_issues ?? []).length > 0 && (
+            <ul className="mt-1 list-disc pl-5">
+              {(note.open_issues ?? []).map((x, i) => <li key={i}>{x}</li>)}
+            </ul>
+          )}
+        </div>
+      )}
       <dl className="grid gap-3 md:grid-cols-2">
         {entries.map(([k, v]) => (
           <div key={k} className="rounded-md border border-line px-3 py-2">

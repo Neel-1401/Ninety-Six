@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any
 
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -67,7 +68,78 @@ def build_summary(session: Session, episode: DischargeEpisode) -> dict[str, Any]
 
 def write_summary(session: Session, episode: DischargeEpisode) -> dict[str, Any]:
     s = build_summary(session, episode)
+    from ..models import Patient
+
+    p = session.get(Patient, episode.patient_id)
+    s["clinical_note"] = {"text": template_note(s, p.full_name if p else "The patient"), "open_issues": [],
+                          "by": "rules", "model": None, "ms": 0}
     episode.summary = s
     log_usage(session, episode.id, s["facts_used"], used_for="summary", ref_type="summary", ref_id=episode.id,
               note="96-hour summary")
     return s
+
+
+# ----------------------------------------------------------------------------- clinical note
+def template_note(s: dict[str, Any], patient_label: str = "The patient") -> str:
+    cis = s.get("checkins", [])
+    done = [c for c in cis if c.get("submitted_at")]
+    levels = Counter(c.get("triage_level") or "unprocessed" for c in done)
+    lines = [
+        f"96-hour post-discharge summary for {patient_label}.",
+        f"Check-ins: {len(done)} of {len(cis)} completed"
+        + (f" ({', '.join(f'{v} {k}' for k, v in levels.items())})." if done else "."),
+        f"Escalations: {len(s.get('escalations', []))}; unresolved review items: {len(s.get('unresolved_review_items', []))}.",
+        f"Plan steps completed: {len(s.get('completed_steps', []))}; missed or skipped: {len(s.get('missed_or_skipped', []))}.",
+        f"Follow-ups: {', '.join(f['title'] + ' (' + f['status'] + ')' for f in s.get('followups', [])) or 'none recorded'}.",
+        STATEMENT,
+    ]
+    return " ".join(lines)
+
+
+class ClinicalNote(BaseModel):
+    note: str = Field(description="Concise clinical handover note, 80-180 words, plain text")
+    open_issues: list[str] = Field(default_factory=list, description="Unresolved items the doctor should act on")
+
+
+NOTE_SYSTEM = (
+    "You write a concise clinical handover note (80-180 words, plain text) for the discharging doctor at the end of a "
+    "96-hour post-discharge monitoring window, from the structured record provided (fictional data). Use only facts in "
+    "the record; do not invent symptoms, results, diagnoses or doses; do not give treatment advice. Mention check-in "
+    "outcomes, escalations and how they were handled, follow-up bookings, and anything still unresolved. Do not say the "
+    "patient is cleared."
+)
+
+
+def ai_clinical_note(episode_id: int) -> None:
+    """Runs OUTSIDE any transaction after the summary is saved. Upgrades the template note to an
+    AI-written note if the router allows and the call succeeds; otherwise the template stays."""
+    import json
+
+    from .. import db, llm
+    from ..llm import router
+
+    route = router.decide("summary")
+    res = None
+    if route.use:
+        with db.SessionLocal() as s:
+            ep = s.get(DischargeEpisode, episode_id)
+            record = dict(ep.summary or {}) if ep else {}
+            facts = [{"category": f.category, "text": (f.value or {}).get("text") or f.label}
+                     for f in active_facts(s, episode_id) if f.category in ("diagnosis", "medication", "red_flag", "symptom", "adherence")]
+        record.pop("clinical_note", None)
+        res = llm.structured(NOTE_SYSTEM, json.dumps({"record": record, "facts": facts}, default=str)[:12000],
+                             ClinicalNote, purpose="summary")
+        if res.ok and res.data is not None and not res.data.note.strip():
+            res = llm.LLMResult(False, res.provider, res.model, error="empty note", ms=res.ms)
+    with db.session_scope() as s:
+        ep = s.get(DischargeEpisode, episode_id)
+        if ep is None or not ep.summary:
+            return
+        if res is not None and res.ok:
+            text = res.data.note.strip()[:2500]
+            if "clearance" not in text.lower():
+                text += " " + STATEMENT
+            ep.summary = {**dict(ep.summary), "clinical_note": {
+                "text": text, "open_issues": [x[:200] for x in res.data.open_issues[:8]],
+                "by": "ai", "model": res.model, "ms": res.ms, "fallback": dict(ep.summary).get("clinical_note")}}
+        router.trace(s, episode_id, route, res, scopes=["summary"])

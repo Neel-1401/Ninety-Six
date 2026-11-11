@@ -116,8 +116,8 @@ SAMPLES: list[dict[str, Any]] = [
             "age": 59,
             "sex": "M",
             "phone_e164": "+919000000003",
-            # Patient-facing clinical text is English only: unreviewed multilingual generation is
-            # out of scope, so the language is recorded but messages are not translated.
+            # With the AI on, the welcome message and concern/red-flag replies are translated (English
+            # original shown in the approval card, doctor approves). Routine reminders stay English templates.
             "preferred_language": "Kannada",
             "caregiver_name": "Maria D'Souza",
             "caregiver_relation": "Wife",

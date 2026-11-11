@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from typing import Any, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from sqlalchemy.orm import Session
 
 from .. import llm
@@ -130,21 +130,27 @@ class LLMPlan(BaseModel):
     steps: list[_LLMStep]
 
 
-PLANNER_SYSTEM = """You plan the first 96 hours after hospital discharge for a care-coordination prototype.
-You may ONLY use these action types and argument shapes (arguments_json is a JSON object string):
-- medication_review {"medications": [names]}                         (required, T+0)
-- send_message {"recipient_role": "patient"|"caregiver", "template_id": one of
-  welcome_v1, checkin_reminder_v1, closing_v1 (patient) | caregiver_brief_v1 (caregiver, only if authorised),
-  "channel": "sms", "checkin_title": optional}                       (welcome_v1 must depend on the medication_review step)
-- create_calendar_event {"title", "provider_name", "within_days"}   (one per follow-up in the summary)
-- open_checkin {"template_id": "<given>", "title", "available_hours"}
-- generate_summary {}                                                (required, T+96)
-Offsets are hours after discharge (0-96). Never add medicines, doses, diagnoses or clinical advice;
-message content is filled from doctor-confirmed facts by templates. Approval requirements are decided by
-the hospital's policy, not by you. Use lowercase step keys with underscores."""
+AI_ADDABLE = {"open_checkin", "staff_review"}  # existing internal tools only; never messages or bookings
+MAX_AI_STEPS = 3
+
+PLANNER_SYSTEM = """You help plan the first 96 hours after hospital discharge for a care-coordination prototype.
+A deterministic RULE PLAN already exists (medication review, welcome message, follow-up bookings,
+check-ins, reminders, closing message, 96-hour summary). Do NOT repeat it. You may only ADD 0-3
+condition-specific steps that the rule plan misses for THIS patient's diagnosis, each with a short
+clinical rationale. Allowed action types and argument shapes (arguments_json is a JSON object string):
+- open_checkin {"template_id": "<the given checkin_template_id>", "title": "...", "available_hours": 1-48}
+    an extra guided check-in at a condition-relevant hour (e.g. a day-2 weight/fluid check for heart failure)
+- staff_review {"kind": "care_task", "title": "...", "summary": "what the nurse/doctor should do and why",
+                "requires_role": "any" or "doctor"}
+    a task for the care team (e.g. call to confirm the daily weight log, check a wound photo)
+offset_hours is hours after discharge (0-96). depends_on may only name existing step keys (or be empty).
+Never add medicines, doses, diagnoses or patient advice; never message, book or alert anyone (those come
+from the rule plan and hospital policy). Approval requirements are decided by policy, not by you.
+Use lowercase step keys with underscores. Return an empty steps list if nothing is needed."""
 
 
-def llm_plan(session: Session, episode: DischargeEpisode) -> tuple[Optional[dict[str, Any]], Optional[str]]:
+def llm_plan(session: Session, episode: DischargeEpisode, base: Optional[PlanSpec] = None,
+             result_out: Optional[list] = None) -> tuple[Optional[dict[str, Any]], Optional[str]]:
     p = session.get(Patient, episode.patient_id)
     facts = active_facts(session, episode.id)
     diag = " ".join(fact_text(f) for f in facts if f.category == "diagnosis" and not f.is_missing)
@@ -153,8 +159,12 @@ def llm_plan(session: Session, episode: DischargeEpisode) -> tuple[Optional[dict
         "caregiver_authorised": caregiver_ok(p), "checkin_template_id": ct.choose_template(diag),
         "facts": [{"category": f.category, "text": fact_text(f), "missing": f.is_missing} for f in facts
                   if f.category in ("diagnosis", "medication", "follow_up", "red_flag", "allergy", "social")],
+        "rule_plan": [{"step_key": s.step_key, "action_type": s.action_type, "offset_hours": s.offset_hours,
+                       "title": s.title} for s in (base.steps if base else [])],
     }, indent=1)
     res = llm.structured(PLANNER_SYSTEM, user, LLMPlan, purpose="planning")
+    if result_out is not None:
+        result_out.append(res)
     if not res.ok or res.data is None:
         return None, res.error
     steps = []
@@ -165,34 +175,120 @@ def llm_plan(session: Session, episode: DischargeEpisode) -> tuple[Optional[dict
             args = {"__invalid_json__": s.arguments_json[:80]}
         steps.append({"step_key": s.step_key, "title": s.title, "purpose": s.purpose, "action_type": s.action_type,
                       "arguments": args, "offset_hours": s.offset_hours, "depends_on": s.depends_on,
-                      "rationale": s.rationale,
-                      "freshness_hours": REMINDER_FRESHNESS_H if args.get("template_id") in ("checkin_reminder_v1", "closing_v1") else None})
+                      "rationale": s.rationale})
     return {"rationale": res.data.rationale, "steps": steps}, None
 
 
+def vet_ai_additions(raw_steps: list[dict[str, Any]], base: PlanSpec, *, template_id: str,
+                     caregiver_contact_ok: bool, patient_phone_ok: bool) -> tuple[list[StepSpec], list[str]]:
+    """Validate EVERY AI-proposed addition on its own; invalid ones are dropped with a reason.
+    Checks: tool exists and is addable, due 0-96 h, arguments valid for the tool, rationale given."""
+    from ..policy.approval import ALLOWED_ACTIONS
+    from .plan_validation import ARG_SCHEMAS
+
+    keys = {s.step_key for s in base.steps}
+    accepted: list[StepSpec] = []
+    dropped: list[str] = []
+    for raw in raw_steps:
+        name = str(raw.get("step_key") or raw.get("title") or "?")[:60]
+        at = raw.get("action_type")
+        if len(accepted) >= MAX_AI_STEPS:
+            dropped.append(f"AI step '{name}': dropped (max {MAX_AI_STEPS} additions)")
+            continue
+        if at not in ALLOWED_ACTIONS:
+            dropped.append(f"AI step '{name}': unknown tool '{at}'")
+            continue
+        if at not in AI_ADDABLE:
+            dropped.append(f"AI step '{name}': tool '{at}' is not allowed for AI additions")
+            continue
+        try:
+            off = float(raw.get("offset_hours"))
+        except (TypeError, ValueError):
+            off = -1
+        if not 0 <= off <= 96:
+            dropped.append(f"AI step '{name}': due T+{raw.get('offset_hours')} h is outside 0-96 h")
+            continue
+        args = dict(raw.get("arguments") or {})
+        if at == "open_checkin":
+            args.setdefault("template_id", template_id)
+            if args.get("template_id") != template_id:
+                dropped.append(f"AI step '{name}': check-in template must be {template_id}")
+                continue
+        if at == "staff_review":
+            args["kind"] = "care_task"
+        try:
+            args = ARG_SCHEMAS[at].model_validate(args).model_dump()
+        except ValidationError as e:
+            dropped.append(f"AI step '{name}': invalid arguments ({e.errors()[0]['msg']})")
+            continue
+        rationale = str(raw.get("rationale") or "").strip()
+        title = str(raw.get("title") or "").strip()
+        if not rationale or len(title) < 2:
+            dropped.append(f"AI step '{name}': missing title or rationale")
+            continue
+        key = "ai_" + slug(str(raw.get("step_key") or title))[:50]
+        while key in keys:
+            key += "_x"
+        try:
+            spec = StepSpec(step_key=key, title=title[:160], purpose=str(raw.get("purpose") or "")[:500],
+                            action_type=at, arguments=args, offset_hours=round(off, 2),
+                            depends_on=[d for d in (raw.get("depends_on") or []) if d in keys],
+                            rationale=f"AI-suggested: {rationale}"[:1000], origin="ai")
+        except ValidationError as e:
+            dropped.append(f"AI step '{name}': {e.errors()[0]['msg']}")
+            continue
+        # the whole plan must still validate with this step in it
+        ok, errs = validate_plan(PlanSpec(rationale="", steps=list(base.steps) + accepted + [spec]),
+                                 caregiver_contact_ok=caregiver_contact_ok, patient_phone_ok=patient_phone_ok)
+        if ok is None:
+            dropped.append(f"AI step '{name}': " + "; ".join(errs)[:200])
+            continue
+        keys.add(key)
+        accepted.append(spec)
+    return accepted, dropped
+
+
 def build_initial_spec(session: Session, episode: DischargeEpisode) -> tuple[PlanSpec, str, dict[str, Any]]:
-    """Returns (spec, source, validation). Must be called BEFORE writing (LLM network call)."""
+    """Returns (spec, source, validation). Must be called BEFORE writing (LLM network call).
+    Hybrid: the rule plan is always the base; the AI may only ADD validated condition-specific steps."""
+    from ..llm import router
+
     p = session.get(Patient, episode.patient_id)
-    validation: dict[str, Any] = {"llm_attempted": False, "llm_valid": None, "fallback_used": False, "errors": []}
-    if llm.is_configured():
-        validation["llm_attempted"] = True
-        session.commit()  # A-08: no write lock is held during the LLM call
-        raw, err = llm_plan(session, episode)
-        if raw is not None:
-            spec, errors = validate_plan(raw, caregiver_contact_ok=caregiver_ok(p), patient_phone_ok=bool(p.phone_e164))
-            if spec is not None:
-                validation["llm_valid"] = True
-                return spec, f"llm:{llm.provider_name()}", validation
-            validation["llm_valid"] = False
-            validation["errors"] = errors
-        else:
-            validation["errors"] = [f"LLM unavailable: {err}"]
-        validation["fallback_used"] = True
-    spec = rule_plan(session, episode)
-    checked, errors = validate_plan(spec, caregiver_contact_ok=caregiver_ok(p), patient_phone_ok=bool(p.phone_e164))
+    validation: dict[str, Any] = {"llm_attempted": False, "llm_valid": None, "fallback_used": False, "errors": [],
+                                  "ai_added": [], "ai_dropped": []}
+    base = rule_plan(session, episode)
+    checked, errors = validate_plan(base, caregiver_contact_ok=caregiver_ok(p), patient_phone_ok=bool(p.phone_e164))
     if checked is None:  # should never happen; surface loudly
         raise RuntimeError(f"rule plan failed validation: {errors}")
-    return checked, ("rules_fallback" if validation["fallback_used"] else "rules"), validation
+    facts = active_facts(session, episode.id, ["diagnosis"])
+    diag = " ".join(fact_text(f) for f in facts if not f.is_missing)
+    route = router.decide("planning", {"diagnosis": diag})
+    validation["route"] = {"use_llm": route.use, "reason": route.reason}
+    if not route.use:
+        validation["ai_tag"] = router.tag(route)
+        return checked, "rules", validation
+    validation["llm_attempted"] = True
+    session.commit()  # A-08: no write lock is held during the LLM call
+    out: list = []
+    raw, err = llm_plan(session, episode, checked, result_out=out)
+    res = out[0] if out else None
+    validation["ai_tag"] = router.tag(route, res)
+    validation["ai_ms"] = res.ms if res else 0
+    if raw is None:
+        validation.update(fallback_used=True, llm_valid=False, errors=[f"LLM unavailable: {err}"])
+        return checked, "rules_fallback", validation
+    accepted, dropped = vet_ai_additions(raw.get("steps", []), checked, template_id=ct.choose_template(diag),
+                                         caregiver_contact_ok=caregiver_ok(p), patient_phone_ok=bool(p.phone_e164))
+    validation["ai_added"] = [s.step_key for s in accepted]
+    validation["ai_dropped"] = dropped
+    validation["errors"] = dropped
+    if not accepted:
+        validation.update(llm_valid=not dropped, fallback_used=bool(dropped))
+        return checked, ("rules_fallback" if dropped else "rules"), validation
+    validation["llm_valid"] = True
+    spec = PlanSpec(rationale=checked.rationale + f" AI added {len(accepted)} condition-specific step(s): "
+                    + "; ".join(s.title for s in accepted) + ".", steps=list(checked.steps) + accepted)
+    return spec, f"rules+llm:{res.provider if res else llm.provider_name()}", validation
 
 
 def generate_draft_plan(
@@ -212,6 +308,21 @@ def generate_draft_plan(
     )
     log_usage(session, episode.id, facts, used_for="planning", ref_type="plan_version", ref_id=pv.id,
               note=f"plan v{pv.version} drafted")
+    if validation.get("route"):
+        from ..llm import router
+
+        r = validation["route"]
+        tagged = validation.get("ai_tag") or {}
+        route = router.Route("planning", r["use_llm"], r["reason"])
+        res = None
+        if route.use:
+            ok = tagged.get("by") == "ai"
+            res = llm.LLMResult(ok, llm.provider_name(), tagged.get("model") or llm.model_name(),
+                                error=None if ok else (tagged.get("reason") or "no usable output"),
+                                ms=validation.get("ai_ms") or 0)
+        router.trace(session, episode.id, route, res,
+                     note=(f"added: {', '.join(validation.get('ai_added') or []) or 'none'}; "
+                           f"dropped: {len(validation.get('ai_dropped') or [])}"), scopes=["plan"])
     if validation.get("fallback_used"):
         record_event(
             session, "plan.fallback_used",

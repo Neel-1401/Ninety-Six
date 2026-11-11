@@ -159,11 +159,45 @@ def _grounded(text: str, line_text: str) -> bool:
     return bool(w) and len(w & _words(line_text)) / len(w) >= 0.6
 
 
-def llm_extract(text: str) -> tuple[Optional[dict[str, Any]], Optional[str], str]:
+def sections_found(text: str) -> bool:
+    return any(SECTION_RE.match(ln.strip()) for ln in text.splitlines())
+
+
+def _norm(s: str) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", (s or "").lower()))
+
+
+def _item_key(it: dict[str, Any]) -> str:
+    v = it["value"]
+    if it["category"] == "medication":
+        return "medication:" + _norm(v.get("name", "")).split(" ")[0]
+    if it["category"] == "follow_up":
+        return "follow_up:" + _norm(v.get("title", ""))
+    return f"{it['category']}:" + _norm(v.get("text", ""))
+
+
+def merge_results(rules: dict[str, Any], ai: dict[str, Any]) -> tuple[dict[str, Any], int]:
+    """Rules first: every regex item is kept; AI items are only ADDED when the regex missed them."""
+    items = list(rules["items"])
+    seen = {_item_key(i) for i in items}
+    added = 0
+    for it in ai["items"]:
+        k = _item_key(it)
+        if k in seen:
+            continue
+        seen.add(k)
+        items.append(it)
+        added += 1
+    return {"items": items, "notes": list(rules["notes"]) + list(ai["notes"])}, added
+
+
+def llm_extract(text: str, *, result_out: Optional[list] = None) -> tuple[Optional[dict[str, Any]], Optional[str], str]:
     """Returns (result|None, error|None, method)."""
     lines = text.splitlines()
     numbered = "\n".join(f"L{i}: {ln}" for i, ln in enumerate(lines, 1))
     res = llm.structured(SYSTEM, numbered, LLMExtraction, purpose="extraction")
+    if result_out is not None:
+        result_out.append(res)
     if not res.ok or res.data is None:
         return None, res.error, "rules"
     out: list[dict[str, Any]] = []
@@ -224,18 +258,27 @@ def run_extraction(session: Session, episode: DischargeEpisode, *, actor: User) 
     ).first()
     text = doc.text if doc else ""
 
-    # LLM first (before any write so no write lock is held during the network call).
-    result, err, method = (None, None, "rules")
-    if llm.is_configured() and text.strip():
+    # Rules first. The LLM is consulted only when the regex result is weak, and its items are
+    # MERGED into the rule result (never replacing it). Network call happens before any write.
+    from ..llm import router
+
+    result = rules_extract(text)
+    method = "rules"
+    notes: list[str] = []
+    route = router.decide("extraction", {"rules": result, "sections_found": sections_found(text)})         if text.strip() else router.Route("extraction", False, "empty summary")
+    llm_res: list = []
+    if route.use:
         # A-08: release any write lock held by the caller's transaction before the network call.
         session.commit()
-        result, err, method = llm_extract(text)
-    notes: list[str] = []
-    if result is None:
-        if llm.is_configured():
-            notes.append(f"LLM extraction unavailable ({err}); deterministic parser used.")
+        ai, err, ai_method = llm_extract(text, result_out=llm_res)
+        if ai is not None:
+            result, added = merge_results(result, ai)
+            method = f"rules+{ai_method}"
+            notes.append(f"Regex result was weak ({route.reason.split(': ', 1)[-1]}); AI added {added} grounded item(s).")
+        else:
+            notes.append(f"AI extraction unavailable ({err}); regex parser result kept.")
             method = "rules_fallback"
-        result = rules_extract(text)
+    router.trace(session, episode.id, route, llm_res[0] if llm_res else None, scopes=["episode"])
     notes.extend(result["notes"])
 
     # Replace previous agent-extracted facts (staff entries/corrections are kept).

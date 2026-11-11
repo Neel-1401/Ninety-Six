@@ -334,8 +334,26 @@ def handle_process_checkin(task_id: int) -> None:
                                              rules.get("matched_fact_ids", []))
         context = "Discharge warning signs:\n" + "\n".join(f"- {x[1]}" for x in flags) + "\n\nAnswers:\n" + "\n".join(
             f"- {qtext.get(k, k)}: {v}" for k, v in answers.items()) + f"\n\nFree text: {free_text or '(none)'}"
-        verdict = tr.combine(rules, tr.llm_triage(context))
+        # Hybrid routing: a rules RED FLAG is final (AI never consulted); simple check-ins stay rule-only;
+        # longer / unrecognised free text is read by the AI, which can only RAISE the level.
+        from ..agent import drafting
+        from ..llm import router
+
+        route = router.decide("triage", tr.route_context(rules, free_text))
+        out: list = []
+        verdict = tr.combine(rules, tr.llm_triage(context, out) if route.use else None)
+        triage_res = out[0] if out else None
+        verdict["ai"] = router.tag(route, triage_res)
+        drafts = []
+        if verdict["level"] in ("concern", "urgent"):  # draft the reply BEFORE the write transaction
+            tpl = "urgent_safety_v1" if verdict["level"] == "urgent" else "concern_reply_v1"
+            try:
+                drafts = drafting.prewarm(ep_id, [tpl], checkin_id=ci_id, patient_words=free_text)
+            except Exception:  # noqa: BLE001 - drafting is optional; the template is the fallback
+                log.exception("reply drafting failed; template will be used")
         with db.session_scope() as s:
+            router.trace(s, ep_id, route, triage_res, scopes=["checkins"])
+            drafting.trace_all(s, ep_id, drafts)
             _persist_triage(s, task_id, ci_id, ep_id, verdict, answers, early_item_id=early_item_id)
     except Exception as e:  # answers are already saved; record failure, retry safely
         log.exception("check-in processing failed")
@@ -621,6 +639,13 @@ def handle_generate_summary(task_id: int) -> None:
         record_event(s, "episode.updated", "Monitoring window ended - awaiting closure review", episode_id=ep.id,
                      actor_type="worker", actor_label="Ninety-Six worker", detail={"status": ep.status},
                      scopes=["episode", "episodes", "overview", "summary", "reviews", "today", "plan"], patient_visible=True)
+        ep_id = ep.id
+    try:
+        from ..agent.summary import ai_clinical_note
+
+        ai_clinical_note(ep_id)
+    except Exception:  # noqa: BLE001 - the template note is already saved
+        log.exception("AI clinical note failed; template summary kept")
 
 
 HANDLERS = {

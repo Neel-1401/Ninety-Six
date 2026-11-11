@@ -222,7 +222,8 @@ def test_a07_urgent_item_visible_before_llm_returns(session, fake_llm):
     seen = {}
 
     def fn(system, user, schema, purpose):
-        if purpose == "triage":
+        seen.setdefault("purposes", []).append(purpose)
+        if purpose == "reply_draft":  # the (possibly slow) AI reply draft for the red flag
             with db.SessionLocal() as other:  # what the hospital UI would see right now
                 seen["items"] = other.scalars(select(ReviewItem).where(ReviewItem.kind == "urgent_concern")).all()
         return llm.LLMResult(False, "anthropic", "m", error="slow / failed")
@@ -231,6 +232,7 @@ def test_a07_urgent_item_visible_before_llm_returns(session, fake_llm):
     advance(24)
     fake_llm(fn)
     submit_checkin(ids["episode"], "red_flag")
+    assert "triage" not in seen["purposes"]  # rules said red flag: the AI is never asked for the level
     assert len(seen["items"]) == 1 and seen["items"][0].priority == "urgent"
     with db.session_scope() as s:
         assert count(s, ReviewItem, ReviewItem.kind == "urgent_concern") == 1  # not duplicated afterwards
@@ -252,9 +254,16 @@ def test_a08_no_write_lock_held_during_llm_extraction(session, fake_llm):
     with db.session_scope() as s:
         doctor, nurse = make_staff(s)
         ep = make_episode(s, nurse, doctor)
+        from app.models import DischargeDocument
+        from tests.test_agent_integrity import PROSE_SUMMARY
+
+        # weak (prose) summary so the router sends extraction to the AI as well
+        s.scalars(select(DischargeDocument).where(DischargeDocument.episode_id == ep.id)).first().text = PROSE_SUMMARY
         ops.run_extraction(s, ep, actor=nurse)
-        ep.status = "awaiting_review"
-        ops.generate_draft_plan(s, ep, actor=nurse)
+        ep2 = make_episode(s, nurse, doctor)  # normal summary: has a diagnosis, so planning asks the AI for additions
+        ops.run_extraction(s, ep2, actor=nurse)
+        ep2.status = "awaiting_review"
+        ops.generate_draft_plan(s, ep2, actor=nurse)
     assert result == {"extraction": True, "planning": True}
 
 

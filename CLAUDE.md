@@ -40,7 +40,7 @@
 - **Irreversible = gated:** sending any message, booking any appointment, alerting the care team.
 - **Batch sign-off:** one "Activate routine check-in schedule" approval pre-approves *templated* check-ins only. Agent-drafted replies, caregiver messages and escalations are always approved one by one. Red flags are marked **URGENT**.
 - **Triage safety rule:** the rules engine can only *raise* the LLM's triage level, never lower it.
-- **LLM:** Gemini 2.5 Flash (free tier) or Claude, selected by env var. **Every LLM call has a rule-based fallback.**
+- **LLM:** Gemini 2.5 Flash (free tier) or Claude, selected by env var. **Every LLM call has a rule-based fallback.** (Gemini 2.5 Flash is closed to new API keys, so `GEMINI_MODEL` defaults to `gemini-3.1-flash-lite`; see DECISIONS D17.)
 - **Demo time:** a simulated clock with fast-forward (+6 h / +24 h) compresses 96 hours into 3 minutes.
 - **Not a diagnostic tool.** It never changes doses; it routes to clinicians. All sample data is fictional.
 
@@ -71,6 +71,8 @@ Roles: **doctor** (reviews extraction, activates plan, approves/edits/rejects ex
 ## 6. Build status
 
 See `FEATURES.md` (Implemented / Verified sim / Verified live). Do not mark anything verified without evidence.
+
+Update (12 Nov 2026, 1:15 AM IST): **hybrid rules-first LLM routing** added. One router (`backend/app/llm/router.py`, `should_use_llm(task, context)`) decides every AI use and writes it to the activity trace ("AI used: <task> (<model>, <ms>)" / "Rules used: <reason>" / "AI failed -> rules fallback"). Rule-only: scheduling, templated check-ins/reminders, risk score, approval gates, interaction table + openFDA, red-flag keywords. AI only for: weak regex parse (merged, never replacing), plan *additions* (open_checkin / staff_review care tasks, each validated: tool, 0-96 h, args; invalid ones dropped), free-text triage when rules did not find a red flag (final = max(rules, AI)), concern/red-flag reply drafts + translation for non-English patients (always through approval, English original kept, priority unchanged), and the 96-hour clinical note (template fallback). Guardrails in `app/llm/__init__.py`: 8 s hard timeout, strict schema, max 1 retry, in-memory prompt-hash cache, Settings kill switch (or `LLM_PROVIDER=mock`, which stays the default in `.env`). UI shows AI / Rules tags on plan steps, triage, approval cards and the summary note. 105 backend tests pass (14 new in `tests/test_llm_hybrid.py`, fake LLM); `smoke_story.py` passes with mock and with Gemini live (`gemini-3.1-flash-lite`).
 
 Snapshot (11 Nov 2026, 11:00 PM IST): all features implemented. 90 backend tests pass; the frontend build passes; `backend/scripts/smoke_story.py` (the full demo story, 31 steps) passes with live tools. **Live:** openFDA + Gmail SMTP care-team email. **Simulated fallback:** Twilio SMS, Google Calendar, LLM (rules). **Not yet confirmed in a browser:** the approval card refreshing after a send, and the patient receipt screen. Remaining: record the video (`docs/VIDEO_SCRIPT.md`) and submit.
 
