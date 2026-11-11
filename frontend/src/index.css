@@ -1,4 +1,6 @@
-@import "tailwindcss";
+@import "tailwindcss" source(".");
+/* Explicit source root: scan src/ for class names instead of relying on automatic
+   detection, which once produced a dev stylesheet with no utilities (11 Nov 2026). */
 
 /*
   Ninety-Six design tokens (lead-owned). One system for hospital and patient views.
