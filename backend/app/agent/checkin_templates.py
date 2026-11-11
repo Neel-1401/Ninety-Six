@@ -59,7 +59,7 @@ TEMPLATES: dict[str, dict[str, Any]] = {
             "red_flag": {"breathing_trend": "worse", "breathless_flat": "yes", "weight_gain": "no",
                          "swelling": "yes", "chest_pain": "no", "medicines": "yes"},
         },
-        "preset_text": {"all_good": None, "concern": "My ankles look a bit puffy and I forgot my evening tablet.",
+        "preset_text": {"all_good": None, "concern": "I forgot my evening tablet yesterday and I am a bit worried.",
                         "red_flag": "I get breathless when I lie down at night."},
     },
     "post_surgery_v1": {
