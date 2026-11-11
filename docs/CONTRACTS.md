@@ -324,14 +324,16 @@ facts_used:[ids], statement:"The 96-hour monitoring window has ended. This is no
   **caregiver**, `create_calendar_event`, `care_team_alert` → `explicit`.
 * `open_checkin`, `close_checkin`, `medication_review`, `staff_review`, `generate_summary` → `none` (internal).
 
-**Routine coverage** (checked when proposed AND again immediately before execution): RA active,
+**Routine coverage** (fail-closed: any missing/unknown field ⇒ not covered; checked when proposed AND again immediately before execution): RA active,
 `now < expires_at`, same episode, action_type ∈ action_types, template_id ∈ template_ids,
 recipient_role ∈ recipient_roles, step offset ∈ offsets_hours, payload equals the rendered template
 for this episode (exact allowed content), recipient equals the episode's current registered number,
 and covered sends in the trailing 24 h < max_per_day. Otherwise → needs explicit approval.
 
-**Binding**: `payload_hash = sha256(canonical_json({action_type, recipient_role, effective_recipient,
-channel, template_id, payload, step_key, due_at}))`. A decision is valid only while its
+**Binding**: `payload_hash = sha256(canonical_json({episode_id, action_type, recipient_role,
+intended_recipient, effective_recipient, expected_mode, channel, template_id, payload, step_key, due_at}))`.
+The worker re-derives recipient, mode, channel and caregiver consent before execution; any
+difference invalidates the approval and re-proposes the action as pending (fail closed). A decision is valid only while its
 `payload_hash` equals the action's current hash. Edit-approve: new payload → `payload_version+1`, old
 decisions `valid=False`, new decision bound to the new hash.
 
@@ -457,3 +459,16 @@ timers), `clock.advance(session, hours)` / `clock.reset(session)` (demo only; ca
   by A against this snapshot (required present, value ∈ options).
 * **Patient-visible facts**: categories `diagnosis, medication, allergy, follow_up, red_flag,
   instruction` with `review_state=confirmed` and `active=True` (set `patient_visible=True` at activation).
+
+## 12. Changes after the evaluator's architecture review (11 Nov 2026)
+
+* `APP_MODE` defaults to **production**; demo must be explicitly enabled (`.env.example` sets it).
+* `audit_event` uses SQLite AUTOINCREMENT (ids never reused after a demo reset). SSE clients recreate
+  the EventSource with backoff and `?last_event_id=` after HTTP errors, and refetch on recovery.
+* Changing a patient's phone revokes invitations, unused codes and patient sessions for the old number.
+* `activate_plan` → `409 medication_review_pending` until the draft-stage medication review finishes,
+  so the doctor always reviews the post-finding plan version.
+* Urgent review items are created from deterministic rules before any LLM call.
+* Demo-only fault switch: `GET/POST /api/demo/faults` `{messaging|calendar|care_team_email|medication_info|triage: none|fail|timeout}`.
+* `PatientFollowUpOut` adds `calendar_mode`; proposed slot details are hidden from patients until approved.
+* Unauthenticated demo outbox shows only sign-in codes and invitations.
