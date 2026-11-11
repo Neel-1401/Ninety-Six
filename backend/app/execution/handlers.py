@@ -13,6 +13,7 @@ from .. import db
 from ..clock import clock, iso
 from ..events import record_event
 from ..models import (
+    ApprovalState,
     CheckIn,
     CheckInResponse,
     CheckInStatus,
@@ -150,7 +151,7 @@ def handle_execute_action(task_id: int) -> None:
         idem = a.idempotency_key
         action_id = a.id
     # --- provider call (no transaction open)
-    adapter = get_adapter(tool)
+    adapter = get_adapter(tool, for_execution=True)
     try:
         result: ToolResult = adapter.execute(request, idempotency_key=idem)
     except Exception as e:  # adapter bug: we cannot know whether the action happened
@@ -299,12 +300,22 @@ def handle_process_checkin(task_id: int) -> None:
         template_id, free_text, ci_id, ep_id = ci.template_id, ci.free_text, ci.id, ci.episode_id
         qtext = {q["id"]: q["text"] for q in (ci.questions or [])}
     try:
+        from ..tools.registry import read_demo_faults
+
+        if read_demo_faults().get("triage") in ("fail", "timeout"):
+            raise RuntimeError("Injected demo fault: triage processing failed")
         rules = tr.rules_triage(template_id, answers, free_text, flags)
+        early_item_id = None
+        if rules["level"] == "urgent":
+            # A-07: rules found a red flag -> make it visible NOW, before any (possibly slow) LLM call
+            with db.session_scope() as s:
+                early_item_id = _urgent_item(s, ci_id, ep_id, rules["reasons"], "rules",
+                                             rules.get("matched_fact_ids", []))
         context = "Discharge warning signs:\n" + "\n".join(f"- {x[1]}" for x in flags) + "\n\nAnswers:\n" + "\n".join(
             f"- {qtext.get(k, k)}: {v}" for k, v in answers.items()) + f"\n\nFree text: {free_text or '(none)'}"
         verdict = tr.combine(rules, tr.llm_triage(context))
         with db.session_scope() as s:
-            _persist_triage(s, task_id, ci_id, ep_id, verdict, answers)
+            _persist_triage(s, task_id, ci_id, ep_id, verdict, answers, early_item_id=early_item_id)
     except Exception as e:  # answers are already saved; record failure, retry safely
         log.exception("check-in processing failed")
         with db.session_scope() as s:
@@ -328,7 +339,29 @@ def handle_process_checkin(task_id: int) -> None:
                          detail={"checkin_id": ci_id}, scopes=["checkins", "today", "reviews"], patient_visible=True)
 
 
-def _persist_triage(s: Session, task_id: int, ci_id: int, ep_id: int, verdict: dict[str, Any], answers: dict) -> None:
+def _urgent_item(s: Session, ci_id: int, ep_id: int, reasons: list[str], source: str, matched: list[int]) -> int:
+    ci = s.get(CheckIn, ci_id)
+    existing = s.scalars(select(ReviewItem).where(ReviewItem.source_type == "checkin", ReviewItem.source_id == ci_id,
+                                                  ReviewItem.kind == "urgent_concern")).first()
+    if existing is not None:
+        return existing.id
+    item = ReviewItem(
+        episode_id=ep_id, kind="urgent_concern", priority="urgent", requires_role="doctor",
+        title="URGENT: check-in matches discharge red flags", summary="; ".join(reasons),
+        detail={"checkin_id": ci_id, "reasons": reasons, "source": source, "matched_fact_ids": matched},
+        source_type="checkin", source_id=ci_id,
+    )
+    s.add(item)
+    s.flush()
+    ci.staff_review_state = StaffReviewState.AWAITING
+    record_event(s, "review.created", item.title, episode_id=ep_id, actor_type="agent", actor_label="Ninety-Six triage",
+                 detail={"review_item_id": item.id, "priority": item.priority, "checkin_id": ci_id},
+                 scopes=["reviews", "overview", "episode", "episodes", "checkins"])
+    return item.id
+
+
+def _persist_triage(s: Session, task_id: int, ci_id: int, ep_id: int, verdict: dict[str, Any], answers: dict,
+                    early_item_id: Optional[int] = None) -> None:
     from ..agent.memory import active_facts, add_fact, log_usage
     from ..agent.replanner import patient_response_replan
 
@@ -351,7 +384,12 @@ def _persist_triage(s: Session, task_id: int, ci_id: int, ep_id: int, verdict: d
     flags = [f for f in active_facts(s, ep_id, ["red_flag"]) if not f.is_missing]
     log_usage(s, ep_id, flags, used_for="triage", ref_type="checkin", ref_id=ci_id, note=f"triage {level}")
     item = None
-    if level == "urgent":
+    if early_item_id is not None:
+        early = s.get(ReviewItem, early_item_id)
+        early.summary = "; ".join(reasons)
+        early.detail = {**dict(early.detail or {}), "reasons": reasons, "source": verdict["source"]}
+        ci.staff_review_state = StaffReviewState.AWAITING
+    elif level == "urgent":
         item = ReviewItem(
             episode_id=ep_id, kind="urgent_concern", priority="urgent", requires_role="doctor",
             title="URGENT: check-in matches discharge red flags", summary="; ".join(reasons),
@@ -373,7 +411,7 @@ def _persist_triage(s: Session, task_id: int, ci_id: int, ep_id: int, verdict: d
         record_event(s, "review.created", item.title, episode_id=ep_id, actor_type="agent", actor_label="Ninety-Six triage",
                      detail={"review_item_id": item.id, "priority": item.priority, "checkin_id": ci_id},
                      scopes=["reviews", "overview", "episode", "episodes", "checkins"])
-    else:
+    elif early_item_id is None:
         ci.staff_review_state = StaffReviewState.NOT_REQUESTED
     record_event(s, "checkin.processed", f"Check-in processed by agent: {level} ({verdict['source']})",
                  episode_id=ep_id, actor_type="agent", actor_label="Ninety-Six triage",
@@ -393,7 +431,7 @@ def handle_medication_review(task_id: int) -> None:
         t = s.get(ScheduledTask, task_id)
         ep = s.get(DischargeEpisode, t.episode_id)
         names = medication_names(s, ep)
-        adapter = get_adapter("medication_info")
+        adapter = get_adapter("medication_info", for_execution=True)
         ex = ToolExecution(episode_id=ep.id, task_id=t.id, tool="medication_info",
                            provider="openfda" if adapter.mode() == "live" else "local", mode=adapter.mode(),
                            attempt=t.attempts, idempotency_key=f"ep{ep.id}-medreview-{t.id}",
@@ -407,53 +445,77 @@ def handle_medication_review(task_id: int) -> None:
         result = ToolResult("failure", "simulated", "local", safe_error=f"medication lookup error ({type(e).__name__})",
                             retryable=True)
     with db.session_scope() as s:
-        from ..agent.memory import add_fact
-        from ..agent.replanner import tool_finding_replan
-
         t = s.get(ScheduledTask, task_id)
-        ep = s.get(DischargeEpisode, ep_id)
-        ex = s.get(ToolExecution, ex_id)
-        ex.outcome, ex.mode, ex.provider = result.outcome, result.mode, result.provider
-        ex.provider_status, ex.delivery_status, ex.safe_error = result.provider_status, result.delivery_status, result.safe_error
-        ex.data, ex.finished_at = dict(result.data or {}), clock.now()
-        if result.outcome != "success":
-            if t.attempts < t.max_attempts:
-                t.next_attempt_at = clock.real_now() + timedelta(seconds=BACKOFF_SECONDS[0])
-                _finish(s, t, TaskStatus.SCHEDULED, f"medication lookup failed ({result.safe_error}); retrying")
-            else:
-                _finish(s, t, TaskStatus.FAILED, result.safe_error, summary=f"failed: {result.safe_error}")
-            return
-        for old in s.scalars(select(PatientFact).where(PatientFact.episode_id == ep.id, PatientFact.category == "medication_info",
-                                                        PatientFact.active.is_(True))):
-            old.active = False
-        data = result.data or {}
-        lim = data.get("limitations", "")
-        for d in data.get("drugs", []):
-            src = "tool:openfda" if d.get("source") == "openFDA drug label" else "tool:local_reference"
-            add_fact(s, ep.id, category="medication_info", label=f"Label information: {d['name']}",
-                     value={"text": d.get("excerpt") or d.get("note") or "No label text retrieved.", **d, "limitations": lim},
-                     source_kind=FactSourceKind.TOOL, source_ref=src, source_excerpt=d.get("excerpt"))
-        finding_ids, findings = [], []
-        for f in data.get("interactions", []):
-            fact = add_fact(s, ep.id, category="medication_info", label="Flagged combination: " + " + ".join(f["drugs"]),
-                            value={"text": f["finding"], "drugs": f["drugs"], "source": f["source"], "limitations": lim},
-                            source_kind=FactSourceKind.TOOL, source_ref="tool:local_interaction_rules")
-            finding_ids.append(fact.id)
-            findings.append(f["finding"])
-        found = sum(1 for d in data.get("drugs", []) if d.get("label_status") == "found")
-        src = (f"openFDA: {found} labels found, {data.get('openfda_failures', 0)} lookups failed" if result.mode == "live"
-               else "openFDA not queried; local reference notes only")
-        summary = (f"{len(data.get('drugs', []))} medicines checked ({src}); "
-                   f"{len(findings)} combination flag(s) for clinician review")
-        _finish(s, t, TaskStatus.SUCCEEDED, None, summary=summary)
-        record_event(s, "tool.executed", f"medication_info ({result.mode}) -> {summary}", episode_id=ep.id,
-                     actor_type="worker", actor_label="Ninety-Six executor",
-                     detail={"execution_id": ex.id, "findings": findings, "limitations": lim,
-                             "openfda_calls": data.get("openfda_calls"), "openfda_failures": data.get("openfda_failures")},
-                     scopes=["executions", "memory", "plan"])
-        s.flush()
-        if findings:
-            tool_finding_replan(s, ep, findings=findings, fact_ids=finding_ids)
+        _persist_med_review(s, t, s.get(DischargeEpisode, ep_id), s.get(ToolExecution, ex_id), result)
+
+
+def _persist_med_review(s: Session, t: ScheduledTask, ep: DischargeEpisode, ex: ToolExecution, result: ToolResult) -> None:
+    from ..agent.memory import add_fact
+    from ..agent.replanner import tool_finding_replan
+
+    ex.outcome, ex.mode, ex.provider = result.outcome, result.mode, result.provider
+    ex.provider_status, ex.delivery_status, ex.safe_error = result.provider_status, result.delivery_status, result.safe_error
+    ex.data, ex.finished_at = dict(result.data or {}), clock.now()
+    if result.outcome != "success":
+        if t.attempts < t.max_attempts:
+            t.next_attempt_at = clock.real_now() + timedelta(seconds=BACKOFF_SECONDS[0])
+            _finish(s, t, TaskStatus.SCHEDULED, f"medication lookup failed ({result.safe_error}); retrying")
+        else:
+            _finish(s, t, TaskStatus.FAILED, result.safe_error, summary=f"failed: {result.safe_error}")
+        return
+    for old in s.scalars(select(PatientFact).where(PatientFact.episode_id == ep.id, PatientFact.category == "medication_info",
+                                                    PatientFact.active.is_(True))):
+        old.active = False
+    data = result.data or {}
+    lim = data.get("limitations", "")
+    for d in data.get("drugs", []):
+        src = "tool:openfda" if d.get("source") == "openFDA drug label" else "tool:local_reference"
+        add_fact(s, ep.id, category="medication_info", label=f"Label information: {d['name']}",
+                 value={"text": d.get("excerpt") or d.get("note") or "No label text retrieved.", **d, "limitations": lim},
+                 source_kind=FactSourceKind.TOOL, source_ref=src, source_excerpt=d.get("excerpt"))
+    finding_ids, findings = [], []
+    for f in data.get("interactions", []):
+        fact = add_fact(s, ep.id, category="medication_info", label="Flagged combination: " + " + ".join(f["drugs"]),
+                        value={"text": f["finding"], "drugs": f["drugs"], "source": f["source"], "limitations": lim},
+                        source_kind=FactSourceKind.TOOL, source_ref="tool:local_interaction_rules")
+        finding_ids.append(fact.id)
+        findings.append(f["finding"])
+    found = sum(1 for d in data.get("drugs", []) if d.get("label_status") == "found")
+    src = (f"openFDA: {found} labels found, {data.get('openfda_failures', 0)} lookups failed" if result.mode == "live"
+           else "openFDA not queried; local reference notes only")
+    summary = (f"{len(data.get('drugs', []))} medicines checked ({src}); "
+               f"{len(findings)} combination flag(s) for clinician review")
+    _finish(s, t, TaskStatus.SUCCEEDED, None, summary=summary)
+    record_event(s, "tool.executed", f"medication_info ({result.mode}) -> {summary}", episode_id=ep.id,
+                 actor_type="worker", actor_label="Ninety-Six executor",
+                 detail={"execution_id": ex.id, "findings": findings, "limitations": lim,
+                         "openfda_calls": data.get("openfda_calls"), "openfda_failures": data.get("openfda_failures")},
+                 scopes=["executions", "memory", "plan"])
+    s.flush()
+    if findings:
+        tool_finding_replan(s, ep, findings=findings, fact_ids=finding_ids)
+
+
+def complete_medication_review_locally(session: Session, ep: DischargeEpisode) -> None:
+    """Demo seeding only: run the pending draft-stage medication review in the caller's session using
+    the local reference table (no network call, mode=simulated)."""
+    from ..agent.planner import medication_names
+    from ..tools.medication_info import MedicationInfoAdapter
+
+    t = session.scalars(select(ScheduledTask).where(ScheduledTask.episode_id == ep.id, ScheduledTask.kind == "medication_review",
+                                                    ScheduledTask.status.in_([TaskStatus.SCHEDULED, TaskStatus.READY]))).first()
+    if t is None:
+        return
+    names = medication_names(session, ep)
+    t.attempts += 1
+    ex = ToolExecution(episode_id=ep.id, task_id=t.id, tool="medication_info", provider="local", mode="simulated",
+                       attempt=t.attempts, idempotency_key=f"ep{ep.id}-medreview-{t.id}",
+                       request_summary={"medications": names, "local_only": True}, outcome="pending")
+    session.add(ex)
+    session.flush()
+    result = MedicationInfoAdapter().execute({"medications": names, "local_only": True}, idempotency_key=ex.idempotency_key)
+    _persist_med_review(session, t, ep, ex, result)
+    session.flush()
 
 
 def handle_staff_review(task_id: int) -> None:
@@ -494,14 +556,33 @@ def handle_generate_summary(task_id: int) -> None:
         ep = s.get(DischargeEpisode, t.episode_id)
         _finish(s, t, TaskStatus.SUCCEEDED, None, summary="summary generated; awaiting doctor closure review")
         s.flush()
+        cancelled_approved, urgent_open = [], []
         for other in s.scalars(select(ScheduledTask).where(
                 ScheduledTask.episode_id == ep.id, ScheduledTask.id != t.id,
                 ScheduledTask.status.in_([TaskStatus.SCHEDULED, TaskStatus.AWAITING_APPROVAL, TaskStatus.READY]))):
+            a = s.get(ProposedAction, other.action_id) if other.action_id else None
+            if a is not None and a.priority == "urgent" and a.execution_state == ExecutionState.NOT_STARTED                     and a.approval_state in (ApprovalState.PENDING, ApprovalState.APPROVED):
+                urgent_open.append(a)  # A-11: stays live; surfaced below, never silently skipped
+                continue
             set_task_status(s, other, TaskStatus.SKIPPED, "monitoring window ended before this ran")
-            if other.action_id:
-                a = s.get(ProposedAction, other.action_id)
-                if a is not None and a.execution_state == ExecutionState.NOT_STARTED:
-                    a.execution_state = ExecutionState.CANCELLED
+            if a is not None and a.execution_state == ExecutionState.NOT_STARTED:
+                a.execution_state = ExecutionState.CANCELLED
+                if a.approval_state in (ApprovalState.APPROVED, ApprovalState.ROUTINE):
+                    cancelled_approved.append(a)
+                    a.approval_state = ApprovalState.INVALIDATED
+                    a.invalidated_reason = "monitoring window ended before it ran; not sent"
+        if urgent_open:
+            s.add(ReviewItem(
+                episode_id=ep.id, kind="failed_action", priority="urgent", requires_role="doctor",
+                title=f"{len(urgent_open)} urgent action(s) still open after the monitoring window ended",
+                summary="They remain available to approve/send: " + ", ".join(a.step_key for a in urgent_open),
+                detail={"action_ids": [a.id for a in urgent_open]}, source_type="episode", source_id=ep.id))
+        if cancelled_approved:
+            s.add(ReviewItem(
+                episode_id=ep.id, kind="failed_action", priority="normal",
+                title=f"{len(cancelled_approved)} approved action(s) were not sent before the window ended",
+                summary=", ".join(a.step_key for a in cancelled_approved),
+                detail={"action_ids": [a.id for a in cancelled_approved]}, source_type="episode", source_id=ep.id))
             if other.checkin_id:
                 ci = s.get(CheckIn, other.checkin_id)
                 if ci is not None and ci.status == CheckInStatus.DUE:

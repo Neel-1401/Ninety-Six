@@ -227,6 +227,8 @@ def run_extraction(session: Session, episode: DischargeEpisode, *, actor: User) 
     # LLM first (before any write so no write lock is held during the network call).
     result, err, method = (None, None, "rules")
     if llm.is_configured() and text.strip():
+        # A-08: release any write lock held by the caller's transaction before the network call.
+        session.commit()
         result, err, method = llm_extract(text)
     notes: list[str] = []
     if result is None:

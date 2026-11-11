@@ -500,8 +500,10 @@ def apply_new_version(
                 continue
             f = render_action_fields(session, episode, st, prior=a)
             probe = ProposedAction(
-                action_type=a.action_type, recipient_role=f["recipient_role"], effective_recipient=f["effective_recipient"],
-                channel=f["channel"], template_id=f["template_id"], payload=f["payload"], step_key=a.step_key, due_at=st.due_at,
+                episode_id=a.episode_id, action_type=a.action_type, recipient_role=f["recipient_role"],
+                intended_recipient=f["intended_recipient"], effective_recipient=f["effective_recipient"],
+                expected_mode=f["expected_mode"], channel=f["channel"], template_id=f["template_id"],
+                payload=f["payload"], step_key=a.step_key, due_at=st.due_at,
             )
             if policy.action_hash(probe) != a.payload_hash or f["intended_recipient"] != a.intended_recipient:
                 invalidate_action(session, a, f"content or recipient changed in plan v{pv.version}")
@@ -536,3 +538,33 @@ def offset_now(episode: DischargeEpisode) -> float:
 
 def episode_is_monitoring(episode: DischargeEpisode) -> bool:
     return episode.status == EpisodeStatus.ACTIVE
+
+
+def context_drift(session: Session, episode: DischargeEpisode, step: PlanStep, a: ProposedAction) -> Optional[str]:
+    """Pre-flight re-check of recipient + mode (A-05). Returns a reason if the stored action no
+    longer matches the current context (the approval must not be used), else None."""
+    p = session.get(Patient, episode.patient_id)
+    if a.recipient_role == "caregiver" and not (p.caregiver_authorised and p.caregiver_phone_e164):
+        return "caregiver is no longer an authorised contact with a phone number"
+    if a.action_type not in EXTERNAL:
+        return None
+    f = render_action_fields(session, episode, step, prior=a)
+    for k in ("intended_recipient", "effective_recipient", "expected_mode", "recipient_role", "channel"):
+        if (f[k] or "") != (getattr(a, k) or ""):
+            return f"{k.replace('_', ' ')} changed since approval ({getattr(a, k)} -> {f[k]})"
+    return None
+
+
+def reprepose_after_drift(session: Session, episode: DischargeEpisode, step: PlanStep, a: ProposedAction, reason: str) -> None:
+    invalidate_action(session, a, reason, actor_label="Executor pre-flight")
+    p = session.get(Patient, episode.patient_id)
+    if a.recipient_role == "caregiver" and not (p.caregiver_authorised and p.caregiver_phone_e164):
+        step.status, step.result_summary = StepStatus.CANCELLED, f"cancelled: {reason}"
+        return
+    new_a = propose_action(session, episode, step, prior=a)
+    make_task_retry_key = f"ep{episode.id}-pv{step.plan_version_id}-{step.step_key}-execute_action-v{new_a.payload_version}"
+    t = ScheduledTask(episode_id=episode.id, step_id=step.id, action_id=new_a.id, kind="execute_action", due_at=step.due_at,
+                      expires_at=(step.due_at + timedelta(hours=step.freshness_hours)) if step.freshness_hours else None,
+                      status=TaskStatus.SCHEDULED, max_attempts=3, idempotency_key=make_task_retry_key)
+    session.add(t)
+    session.flush()

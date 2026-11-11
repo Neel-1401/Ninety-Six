@@ -176,6 +176,7 @@ def build_initial_spec(session: Session, episode: DischargeEpisode) -> tuple[Pla
     validation: dict[str, Any] = {"llm_attempted": False, "llm_valid": None, "fallback_used": False, "errors": []}
     if llm.is_configured():
         validation["llm_attempted"] = True
+        session.commit()  # A-08: no write lock is held during the LLM call
         raw, err = llm_plan(session, episode)
         if raw is not None:
             spec, errors = validate_plan(raw, caregiver_contact_ok=caregiver_ok(p), patient_phone_ok=bool(p.phone_e164))

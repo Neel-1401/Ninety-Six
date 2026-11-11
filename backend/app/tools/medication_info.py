@@ -120,7 +120,7 @@ class MedicationInfoAdapter:
         for n in names:
             base = _base(n)
             entry: dict[str, Any] = {"name": n}
-            if settings.openfda_enabled:
+            if settings.openfda_enabled and not request.get("local_only"):
                 live_calls += 1
                 lab = _openfda_label(base)
                 entry.update(

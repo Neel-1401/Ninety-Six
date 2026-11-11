@@ -89,10 +89,16 @@ def preflight(s: Session, t: ScheduledTask, now: datetime) -> tuple[str, Optiona
         if ep.status in (EpisodeStatus.DRAFT, EpisodeStatus.AWAITING_REVIEW, EpisodeStatus.ACTIVE):
             return TaskStatus.READY, None, None
         return TaskStatus.SKIPPED, "episode is not open", None
+    after_window_urgent = False
     if ep.status != EpisodeStatus.ACTIVE:
-        if ep.status in (EpisodeStatus.AWAITING_CLOSURE_REVIEW, EpisodeStatus.CLOSED, EpisodeStatus.CANCELLED):
-            return TaskStatus.SKIPPED, "monitoring window has ended", None
-        return TaskStatus.SCHEDULED, "waiting for plan activation", None
+        # A-11: urgent, individually-approvable actions stay live during the closure review
+        if ep.status == EpisodeStatus.AWAITING_CLOSURE_REVIEW and t.kind == "execute_action":
+            ua = s.get(ProposedAction, t.action_id) if t.action_id else None
+            after_window_urgent = ua is not None and ua.priority == "urgent"
+        if not after_window_urgent:
+            if ep.status in (EpisodeStatus.AWAITING_CLOSURE_REVIEW, EpisodeStatus.CLOSED, EpisodeStatus.CANCELLED):
+                return TaskStatus.SKIPPED, "monitoring window has ended", None
+            return TaskStatus.SCHEDULED, "waiting for plan activation", None
     if t.due_at > now:
         return TaskStatus.SCHEDULED, None, None
     if t.expires_at is not None and now > t.expires_at:
@@ -119,13 +125,22 @@ def preflight(s: Session, t: ScheduledTask, now: datetime) -> tuple[str, Optiona
             return TaskStatus.CANCELLED, "action already executed (duplicate task)", None
         if a.execution_state not in (ExecutionState.NOT_STARTED, ExecutionState.RUNNING):
             return t.status, t.status_reason, None
-        if a.approval_state == ApprovalState.PENDING:
+        if a.approval_state not in (ApprovalState.APPROVED, ApprovalState.ROUTINE):
+            # A-06 allow-list: anything other than a valid approval or routine coverage waits
             return TaskStatus.AWAITING_APPROVAL, "waiting for doctor approval", None
+        from ..agent.plan_store import context_drift, reprepose_after_drift
+
+        drift = context_drift(s, ep, step, a)
+        if drift:  # A-05: recipient / live-vs-simulated mode changed since the approval
+            reprepose_after_drift(s, ep, step, a, f"context changed: {drift}")
+            return TaskStatus.SUPERSEDED, f"approval invalidated: {drift}", None
         if a.approval_state == ApprovalState.APPROVED:
             ok, why = policy.explicit_approval_valid(s, a)
             if not ok:
                 return TaskStatus.AWAITING_APPROVAL, f"needs approval: {why}", None
         elif a.approval_state == ApprovalState.ROUTINE:
+            if after_window_urgent:
+                return TaskStatus.SKIPPED, "monitoring window has ended", None
             from ..agent.plan_store import render_action_fields
             from ..models import RoutineAuthorisation
 
@@ -140,6 +155,8 @@ def preflight(s: Session, t: ScheduledTask, now: datetime) -> tuple[str, Optiona
                     detail={"action_id": a.id, "reason": why}, scopes=["actions", "approvals", "plan", "overview"],
                 )
                 return TaskStatus.AWAITING_APPROVAL, f"needs approval: {why}", None
+        else:
+            return TaskStatus.AWAITING_APPROVAL, "waiting for doctor approval", None
         return TaskStatus.READY, None, None
     return TaskStatus.READY, None, None
 
@@ -253,7 +270,8 @@ def _run_once() -> dict[str, Any]:
     stats = {"ran": 0, "changed": 0, "skipped_stale": 0, "awaiting_approval": 0}
     ready: list[int] = []
     with db.session_scope() as s:
-        clock.load(s)
+        # A-09: no clock.load() per tick (it could overwrite an advance that is not yet committed);
+        # the in-process clock is authoritative and is loaded once at startup.
         now = clock.now()
         _recover_expired(s)
         rows = s.scalars(
@@ -331,6 +349,11 @@ def start_background_worker() -> None:
     if _thread is not None and _thread.is_alive():
         return
     _stop.clear()
+    try:
+        with db.session_scope() as s:
+            clock.load(s)
+    except Exception:  # noqa: BLE001
+        log.exception("clock load failed")
     try:
         recover_on_startup()
     except Exception:  # noqa: BLE001

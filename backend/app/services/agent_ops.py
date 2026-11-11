@@ -10,8 +10,10 @@ Permission checks are the caller's job; these functions assume the actor is allo
 B may implement in other modules and re-export from here, but must keep these names/signatures.
 
 Implementation notes (Agent B):
-- run_extraction / generate_draft_plan make their optional LLM call BEFORE writing anything; call
-  them before making other changes in the request so no write lock is held during the call.
+- A-08: when an LLM is configured, run_extraction and generate_draft_plan COMMIT the caller's pending
+  work first and then make the LLM call with no write transaction open (so no SQLite write lock is
+  held for up to LLM_TIMEOUT). With LLM_PROVIDER=mock (default) they never commit. The openFDA
+  medication review never runs in a request: it is a worker task (kick the worker after commit).
 - Default routine scope the UI should offer at activation:
   {"template_ids": ["checkin_reminder_v1"], "recipient_roles": ["patient"],
    "offsets_hours": <offsets of checkin_reminder_v1 steps in the plan>, "max_per_day": 2}
@@ -123,6 +125,10 @@ def activate_plan(
     pending_med_review = session.scalars(select(ScheduledTask).where(
         ScheduledTask.episode_id == episode.id, ScheduledTask.kind == "medication_review",
         ScheduledTask.status.in_([TaskStatus.SCHEDULED, TaskStatus.READY, TaskStatus.RUNNING]))).first()
+    if pending_med_review is not None:
+        raise errors.conflict(
+            "The medication information review is still running. Wait for it to finish; it may change the plan.",
+            code="medication_review_pending", details={"task_id": pending_med_review.id})
     facts = active_facts(session, episode.id)
     required = [f for f in facts if f.category in CLINICAL_CATEGORIES and not f.is_missing
                 and f.source_kind in (FactSourceKind.EXTRACTED, FactSourceKind.STAFF_ENTERED, FactSourceKind.STAFF_CORRECTED)]
@@ -327,12 +333,21 @@ def advance_clock(session: Session, hours: float) -> dict[str, Any]:
         raise errors.demo_disabled()
     if hours not in (6, 24, 6.0, 24.0):
         raise errors.validation("You can advance by 6 or 24 hours.")
-    clock.load(session)
+    before = clock.now()
     new_now = clock.advance(session, float(hours))
     record_event(session, "clock.advanced", f"Simulated clock advanced {hours:g} h", actor_type="system",
                  actor_label="Demo controls", detail={"hours": hours, "sim_now": iso(new_now)},
                  scopes=["clock", "overview", "episodes", "today", "plan", "checkins"], patient_visible=True)
-    session.commit()
+    try:
+        session.commit()
+    except Exception:
+        session.rollback()
+        from .. import db as _db
+
+        with _db.session_scope() as s2:  # restore the committed offset (never leave memory ahead of the DB)
+            clock.load(s2)
+        raise
+    assert clock.now() >= before, "simulated clock went backwards"
     r = worker.run_until_idle()
     notes = []
     if r["skipped_stale"]:
@@ -341,6 +356,41 @@ def advance_clock(session: Session, hours: float) -> dict[str, Any]:
         notes.append(f"{r['awaiting_approval']} task(s) are waiting for doctor approval and were not executed.")
     return {"sim_now": iso(clock.now()), "ran": r["ran"], "skipped_stale": r["skipped_stale"],
             "awaiting_approval": r["awaiting_approval"], "notes": notes}
+
+
+def get_demo_faults(session: Session) -> dict[str, str]:
+    """Demo-only fault switch, e.g. {"messaging": "none"|"fail"|"timeout", "calendar": ..., "care_team_email": ...,
+    "medication_info": ..., "triage": "none"|"fail"}. All "none" outside demo mode."""
+    from ..tools.registry import read_demo_faults
+
+    return read_demo_faults(session)
+
+
+def set_demo_faults(session: Session, faults: dict[str, str], *, actor: Optional[User] = None) -> dict[str, str]:
+    """DEMO ONLY (raises demo_disabled otherwise). Merges `faults` into the stored switch; does not commit.
+    Adapters honour it at execution time only and never call the real provider while a fault is set."""
+    from ..models import SystemState
+    from ..tools.registry import FAULT_TOOLS, FAULT_VALUES, FAULTS_KEY, read_demo_faults
+
+    if not settings.demo_mode:
+        raise errors.demo_disabled()
+    bad = [{"field": k, "message": f"tool must be one of {list(FAULT_TOOLS)} and value one of {list(FAULT_VALUES)}"}
+           for k, v in (faults or {}).items() if k not in FAULT_TOOLS or v not in FAULT_VALUES]
+    if bad:
+        raise errors.validation("Unknown fault setting.", {"fields": bad})
+    merged = {**read_demo_faults(session), **(faults or {})}
+    row = session.get(SystemState, FAULTS_KEY)
+    if row is None:
+        session.add(SystemState(key=FAULTS_KEY, value=merged))
+    else:
+        row.value = dict(merged)
+    session.flush()
+    active = {k: v for k, v in merged.items() if v != "none"}
+    record_event(session, "demo.faults", "Demo fault injection: " + (", ".join(f"{k}={v}" for k, v in active.items()) or "off"),
+                 actor_type="user" if actor else "system", actor_id=actor.id if actor else None,
+                 actor_label=actor.display_name if actor else "Demo controls", detail={"faults": merged},
+                 scopes=["settings"])
+    return merged
 
 
 def seed_background_episodes(session: Session) -> None:
@@ -381,7 +431,11 @@ def seed_background_episodes(session: Session) -> None:
         ep = create("appendectomy", "dr.iyer")
         ep.status = EpisodeStatus.AWAITING_REVIEW
         ep.submitted_at = clock.now()
-        pv = generate_draft_plan(session, ep, actor=nurse)
+        generate_draft_plan(session, ep, actor=nurse)
+        from ..execution.handlers import complete_medication_review_locally
+
+        complete_medication_review_locally(session, ep)  # seed data: local reference only, no network
+        pv = session.get(PlanVersion, ep.current_plan_version_id)
         doctor = session.get(User, next(a.user_id for a in session.scalars(
             select(StaffAssignment).where(StaffAssignment.episode_id == ep.id, StaffAssignment.role == "doctor"))))
         facts = active_facts(session, ep.id)
@@ -398,5 +452,5 @@ __all__ = [
     "run_extraction", "generate_draft_plan", "activate_plan", "approve_action", "edit_and_approve_action",
     "reject_action", "retry_action", "reconcile_execution", "revoke_routine", "request_replan",
     "on_episode_context_changed", "enqueue_checkin_processing", "on_review_item_resolved", "close_episode",
-    "preset_checkin_answers", "advance_clock", "seed_background_episodes", "ProposedAction", "ToolExecution",
+    "preset_checkin_answers", "advance_clock", "get_demo_faults", "set_demo_faults", "seed_background_episodes", "ProposedAction", "ToolExecution",
 ]

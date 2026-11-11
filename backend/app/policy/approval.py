@@ -52,9 +52,12 @@ def editable_fields(action_type: str) -> list[str]:
 
 def compute_hash(
     *,
+    episode_id: Optional[int],
     action_type: str,
     recipient_role: str,
+    intended_recipient: str,
     effective_recipient: str,
+    expected_mode: str,
     channel: str,
     template_id: Optional[str],
     payload: dict[str, Any],
@@ -63,9 +66,12 @@ def compute_hash(
 ) -> str:
     canonical = json.dumps(
         {
+            "episode_id": episode_id,
             "action_type": action_type,
             "recipient_role": recipient_role,
+            "intended_recipient": intended_recipient,
             "effective_recipient": effective_recipient,
+            "expected_mode": expected_mode,
             "channel": channel,
             "template_id": template_id,
             "payload": payload,
@@ -81,9 +87,12 @@ def compute_hash(
 
 def action_hash(a: ProposedAction) -> str:
     return compute_hash(
+        episode_id=a.episode_id,
         action_type=a.action_type,
         recipient_role=a.recipient_role,
+        intended_recipient=a.intended_recipient or "",
         effective_recipient=a.effective_recipient,
+        expected_mode=a.expected_mode,
         channel=a.channel,
         template_id=a.template_id,
         payload=dict(a.payload or {}),
@@ -122,9 +131,23 @@ def _offset_hours(session: Session, a: ProposedAction) -> Optional[float]:
 
 
 def routine_covers(
-    session: Session, a: ProposedAction, ra: RoutineAuthorisation, now: datetime, *, expected_payload: Optional[dict] = None
+    session: Session, a: ProposedAction, ra: Optional[RoutineAuthorisation], now: datetime, *,
+    expected_payload: Optional[dict],
 ) -> tuple[bool, str]:
-    """Check every scope dimension of a routine authorisation for this exact action."""
+    """Check every scope dimension of a routine authorisation for this exact action.
+    FAIL CLOSED: any missing or unrecognised input means "not covered"."""
+    if ra is None:
+        return False, "no routine authorisation"
+    if expected_payload is None:
+        return False, "authorised content could not be determined"
+    if requirement(a.action_type, recipient_role=a.recipient_role, template_id=a.template_id) != ApprovalRequirement.ROUTINE_ELIGIBLE:
+        return False, "this action type always needs individual approval"
+    if not set(ra.action_types or []) <= {"send_message"} or not set(ra.template_ids or []) <= ROUTINE_TEMPLATES             or not set(ra.recipient_roles or []) <= ROUTINE_RECIPIENTS:
+        return False, "routine authorisation scope is outside the hospital policy"
+    if not a.payload_hash or a.payload_hash != action_hash(a):
+        return False, "payload integrity check failed"
+    if ra.expires_at is None or now is None:
+        return False, "missing expiry or time"
     if ra.status != RoutineStatus.ACTIVE:
         return False, f"routine authorisation is {ra.status}"
     if now >= ra.expires_at:
@@ -140,11 +163,11 @@ def routine_covers(
     off = _offset_hours(session, a)
     if off is None or not any(abs(off - float(x)) < 0.01 for x in (ra.offsets_hours or [])):
         return False, f"T+{off:g}h is outside the authorised schedule" if off is not None else "unknown schedule"
-    if expected_payload is not None and dict(a.payload or {}) != dict(expected_payload):
+    if dict(a.payload or {}) != dict(expected_payload):
         return False, "content differs from the authorised template"
     ep = session.get(DischargeEpisode, a.episode_id)
     patient = session.get(Patient, ep.patient_id) if ep else None
-    if a.recipient_role == "patient" and patient is not None and a.intended_recipient != patient.phone_e164:
+    if a.recipient_role != "patient" or patient is None or not patient.phone_e164 or a.intended_recipient != patient.phone_e164:
         return False, "recipient is not the patient's current registered number"
     window_start = now - timedelta(hours=24)
     sent = session.scalar(
@@ -161,7 +184,7 @@ def routine_covers(
 
 
 def find_covering_routine(
-    session: Session, a: ProposedAction, now: datetime, *, expected_payload: Optional[dict] = None
+    session: Session, a: ProposedAction, now: datetime, *, expected_payload: Optional[dict]
 ) -> tuple[Optional[RoutineAuthorisation], str]:
     ras = session.scalars(
         select(RoutineAuthorisation).where(

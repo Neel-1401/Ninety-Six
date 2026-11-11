@@ -52,7 +52,8 @@ def _load(session: Session, action_id: int) -> ProposedAction:
 def _check_current(session: Session, a: ProposedAction) -> DischargeEpisode:
     ep = session.get(DischargeEpisode, a.episode_id)
     st = session.get(PlanStep, a.step_id) if a.step_id else None
-    if ep.status != EpisodeStatus.ACTIVE:
+    urgent_after_window = ep.status == EpisodeStatus.AWAITING_CLOSURE_REVIEW and a.priority == "urgent"
+    if ep.status != EpisodeStatus.ACTIVE and not urgent_after_window:
         raise errors.invalid_state("This episode is not active, so actions can't be approved.")
     if st is None or st.plan_version_id != ep.current_plan_version_id:
         raise errors.invalid_state("This action belongs to a superseded plan version and can no longer be approved.")
