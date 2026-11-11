@@ -136,6 +136,11 @@ def urgent_done():
     return all(acts[a["id"]]["execution_state"] == "succeeded" for a in urgent)
 wait(urgent_done, "urgent actions executed")
 ok(True, "care-team alert + patient response executed")
+alert_ids = {a["id"] for a in urgent if a["action_type"] == "care_team_alert"}
+alert_execs = [e for e in doc.get(f"/api/episodes/{eid}/executions").json() if e["action_id"] in alert_ids]
+want = tools.get("care_team_email", "simulated")
+ok(bool(alert_execs) and all(e["mode"] == want and e["outcome"] == "success" for e in alert_execs),
+   f"URGENT care-team email sent in {want.upper()} mode (ref {alert_execs[0].get('provider_ref') if alert_execs else '-'})")
 
 # 6. 96h summary
 for _ in range(6):
