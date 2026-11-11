@@ -31,7 +31,8 @@ class Settings:
         env = os.getenv
         self.app_name = "Ninety-Six"
         # demo | production. Demo enables role switching, demo codes, clock fast-forward, reset.
-        self.app_mode = env("APP_MODE", "demo").strip().lower()
+        # Demo must be EXPLICITLY enabled with APP_MODE=demo; anything else (or unset) is production.
+        self.app_mode = "demo" if env("APP_MODE", "production").strip().lower() == "demo" else "production"
         self.hospital_name = env("HOSPITAL_NAME", "Sunrise Multispeciality Hospital (fictional)")
         self.hospital_phone = env("HOSPITAL_PHONE", "+91 80 0000 0000 (demo)")
         self.emergency_number = env("EMERGENCY_NUMBER", "108")

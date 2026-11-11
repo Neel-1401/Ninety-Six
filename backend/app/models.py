@@ -707,6 +707,8 @@ class AuditEvent(Base):
     """Append-only trace. `id` doubles as the SSE event id (Last-Event-ID recovery)."""
 
     __tablename__ = "audit_event"
+    # AUTOINCREMENT: ids are never reused after a demo reset, so SSE Last-Event-ID stays monotonic.
+    __table_args__ = {"sqlite_autoincrement": True}
     id: Mapped[int] = mapped_column(primary_key=True)
     episode_id: Mapped[Optional[int]] = mapped_column(ForeignKey("discharge_episode.id"), index=True)
     actor_type: Mapped[str] = mapped_column(String(16))  # user | patient | agent | worker | system

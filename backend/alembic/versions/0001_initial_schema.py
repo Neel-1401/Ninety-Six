@@ -147,7 +147,8 @@ def upgrade() -> None:
     sa.Column('created_at', app.models.UTCDateTime(), nullable=False),
     sa.Column('real_created_at', app.models.UTCDateTime(), nullable=False),
     sa.ForeignKeyConstraint(['episode_id'], ['discharge_episode.id'], ),
-    sa.PrimaryKeyConstraint('id')
+    sa.PrimaryKeyConstraint('id'),
+    sqlite_autoincrement=True
     )
     with op.batch_alter_table('audit_event', schema=None) as batch_op:
         batch_op.create_index(batch_op.f('ix_audit_event_episode_id'), ['episode_id'], unique=False)
