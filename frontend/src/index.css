@@ -1,0 +1,102 @@
+@import "tailwindcss";
+
+/*
+  Ninety-Six design tokens (lead-owned). One system for hospital and patient views.
+  Direction: calm clinical light UI, strong ink contrast, teal = primary action,
+  amber = needs attention, red = urgent only. Status is never colour alone (see ui/status.tsx).
+  Contrast (on #fff): ink 16.9:1 · muted 7.2:1 · primary 5.5:1 · attention-strong 5.0:1 · urgent 6.5:1
+*/
+@theme {
+  --font-sans: "Atkinson Hyperlegible", ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, "Cascadia Mono", "Segoe UI Mono", Consolas, monospace;
+
+  --color-canvas: #f4f7f7; /* app background */
+  --color-surface: #ffffff; /* cards, panels */
+  --color-sunken: #eef2f2; /* wells, table headers */
+  --color-ink: #0f1b1d; /* primary text */
+  --color-muted: #46585c; /* secondary text */
+  --color-faint: #5d6e71; /* tertiary text, still >= 4.5:1 */
+  --color-line: #d4dddf; /* borders */
+  --color-line-strong: #a9b8bb;
+
+  --color-primary: #0f766e; /* teal-700: primary actions, focus */
+  --color-primary-hover: #115e59;
+  --color-primary-soft: #e3f3f1;
+  --color-primary-ink: #0d4f4a; /* text on primary-soft */
+
+  --color-attention: #fef3c7; /* amber surface */
+  --color-attention-line: #f2c35b;
+  --color-attention-strong: #b45309; /* amber icons/borders */
+  --color-attention-ink: #713f12; /* text on amber surface */
+
+  --color-urgent: #b91c1c; /* red-700: urgent only */
+  --color-urgent-hover: #991b1b;
+  --color-urgent-soft: #fde8e8;
+  --color-urgent-ink: #7f1d1d;
+
+  --color-neutral-soft: #e9eef0;
+  --color-neutral-ink: #334548;
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+
+  --shadow-card: 0 1px 2px rgb(15 27 29 / 0.06), 0 1px 1px rgb(15 27 29 / 0.04);
+  --shadow-pop: 0 10px 30px rgb(15 27 29 / 0.16);
+
+  --ease-out-quint: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out-cubic: cubic-bezier(0.645, 0.045, 0.355, 1);
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    @apply bg-canvas text-ink font-sans antialiased;
+    font-size: 16px;
+    line-height: 1.5;
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+  ::selection {
+    background: var(--color-primary-soft);
+  }
+  h1, h2, h3, h4 {
+    line-height: 1.25;
+    text-wrap: balance;
+  }
+}
+
+/* Reduced motion: content stays visible; transitions collapse to near-instant. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Native dialog backdrop */
+dialog::backdrop {
+  background: rgb(15 27 29 / 0.45);
+}
+
+.skip-link {
+  position: absolute;
+  left: 8px;
+  top: -48px;
+  z-index: 100;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: var(--color-ink);
+  color: #fff;
+  transition: top 150ms var(--ease-out-quint);
+}
+.skip-link:focus {
+  top: 8px;
+}
