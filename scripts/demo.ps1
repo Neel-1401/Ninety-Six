@@ -1,5 +1,6 @@
-# Isolated simulated journey. Never calls configured external providers.
-param([int]$Port = 8010, [switch]$SkipBuild)
+# Isolated demo journey. Messaging, calendar, email and the LLM are forced to simulation;
+# openFDA (public, keyless, read-only) is queried live unless -Offline is given, with a local fallback.
+param([int]$Port = 8010, [switch]$SkipBuild, [switch]$Offline, [string]$Database = "recovery_demo.db")
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $backend = Join-Path $root "backend"
@@ -16,15 +17,16 @@ if (-not $SkipBuild) {
 }
 if (-not (Test-Path (Join-Path $frontend "dist\index.html"))) { throw "Build the frontend first." }
 $env:APP_MODE = "demo"
-$env:DATABASE_URL = "sqlite:///recovery_demo.db"
+if ($Database -notmatch '^[\w.-]+\.db$') { throw "Database must be a plain file name ending in .db" }
+$env:DATABASE_URL = "sqlite:///$Database"
 $env:LLM_PROVIDER = "mock"
-$env:OPENFDA_ENABLED = "false"
+$env:OPENFDA_ENABLED = $(if ($Offline) { "false" } else { "true" })
 $env:ALLOW_LIVE_TO_REAL_RECIPIENTS = "false"
 $env:NS_SEED_BACKGROUND = "false"
 $env:WORKER_ENABLED = "true"
 $env:PUBLIC_BASE_URL = "http://localhost:$Port"
 $env:FRONTEND_ORIGIN = "http://localhost:$Port"
-Write-Host "Simulated demo: http://localhost:$Port (separate recovery_demo.db; Ctrl+C to stop)"
+Write-Host "Demo: http://localhost:$Port (database backend\$Database; openFDA $(if ($Offline) {'offline'} else {'live'}); Ctrl+C to stop)"
 Push-Location $backend
 try {
     # Set empty values inside Python before app imports: PowerShell 5.1 removes

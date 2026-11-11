@@ -1,48 +1,58 @@
 # Feature status
 
-## Verification checkpoint — 11 Nov 2026
+_Last reconciled from evidence: Wed 11 Nov 2026, 10:00 PM IST (branch `rebuild`)._
 
-- Frontend: `npm.cmd run build` passed (TypeScript and Vite production build).
-- Backend: ` .\.venv\Scripts\python.exe -m pytest -q` passed: **87 passed in 78.13s**. The HTTP milestone journey now waits for the asynchronous medication review before fetching the doctor's current plan, matching the activation safety gate.
-- The matrix below predates the implementation commits and needs reconciliation against acceptance evidence. Its Planned cells are not an accurate inventory of the current code.
-- Live providers, browser acceptance journeys, and clean-machine setup have not been verified in this checkpoint.
+Columns are filled from evidence only:
 
-Four separate columns, updated by the lead from evidence only:
+- **Implemented**: the code exists.
+- **Verified (sim)**: exercised by automated tests and/or the scripted HTTP journey against a running server, with simulated tools.
+- **Verified (live)**: exercised against the real external provider, with a provider reference as evidence.
 
-- **Planned** — in scope, not built yet.
-- **Implemented** — code exists and the owning agent reports it works; not yet independently verified.
-- **Verified (sim)** — exercised by automated tests and/or the evaluator against the running app with simulated tools.
-- **Verified (live)** — exercised against the real external provider (sandbox/live API) with evidence.
+## Evidence
 
-The previous repository had no FEATURES.md; its CLAUDE.md listed backend modules as "written", but none of them had ever run. That code now lives in `backend/legacy/` as reference only.
+| Check | Result |
+|---|---|
+| `pytest -q` (backend) | **90 passed** in 73 s (11 Nov, 9:45 PM IST) |
+| `npm run build` (frontend) | TypeScript + Vite production build passed |
+| `backend/scripts/smoke_story.py` against `scripts/demo.ps1` on a fresh database | **All 30 steps passed**: the whole 3-minute demo story (below) over real HTTP, with the background worker running and openFDA live |
+| `backend/scripts/verify_live.py` | openFDA `success/live`, labels found for lisinopril + spironolactone (+ furosemide in the smoke run). Twilio, SMTP and Calendar were **skipped: no credentials configured** |
+| Browser walkthrough (Comet, by Codex, 11 Nov) | Nurse intake → doctor activation → welcome approval → +24 h → patient OTP sign-in → guided check-in → urgent concern → plan v3 → urgent approval. A stale approval card was found and fixed (notice scopes). **A browser retest after that fix is still pending.** |
 
-_Last updated: 11 Nov 2026, foundation committed; implementation agents A–D in progress._
+## Matrix
 
-| Area | Feature | Planned | Implemented | Verified (sim) | Verified (live) |
-|---|---|---|---|---|---|
-| Foundation | Data model (26 tables), persisted simulated clock, after-commit SSE bus, error format | | ✅ | ✅ smoke (tables created, clock offset persisted, event id assigned) | n/a |
-| Foundation | Alembic migrations | ✅ | | | n/a |
-| Auth | Staff login with provisioned accounts | ✅ | | | n/a |
-| Auth | Patient invitation + phone + one-time code, cooldown, attempt limits, rate limits | ✅ | | | |
-| Auth | Demo-only role switching / visible demo codes | ✅ | | | n/a |
-| Permissions | Role + episode-assignment checks on every endpoint | ✅ | | | n/a |
-| Intake | Nurse intake with samples (heart failure primary, appendectomy, DKA) | ✅ | | | n/a |
-| Agent | Extraction with sources, "not provided" fields, deterministic fallback | ✅ | | | |
-| Agent | Transparent demo risk prioritisation | ✅ | | | n/a |
-| Agent | 0–96 h plan generation + validation + rule fallback | ✅ | | | |
-| Agent | Versioned replanning with change explanations | ✅ | | | n/a |
-| Agent | Triage of check-ins (rules; LLM may only raise) | ✅ | | | |
-| Agent | Memory facts with provenance + usage log | ✅ | | | n/a |
-| Approvals | Payload-bound approval, edit invalidates, reject, routine authorisation scope + revoke | ✅ | | | n/a |
-| Execution | Durable tasks, atomic claim, idempotency, bounded retry, unknown-outcome handling, restart recovery | ✅ | | | n/a |
-| Execution | Fast-forward without reminder bursts or approval bypass | ✅ | | | n/a |
-| Tools | Medication information (openFDA + local interaction rules) | ✅ | | | |
-| Tools | Messaging (Twilio SMS, DEMO_PHONE redirect) | ✅ | | | |
-| Tools | Calendar (Google Calendar event) | ✅ | | | |
-| Tools | Care-team email (SMTP) | ✅ | | | |
-| Tools | LLM structured output (Anthropic / Gemini) | ✅ | | | |
-| Hospital UI | Overview, patients, intake + extraction review, workspace + timeline, approvals, settings | ✅ | | | n/a |
-| Patient UI | Sign-in, Today, guided check-in with drafts, instructions, messages, follow-up | ✅ | | | n/a |
-| Demo | Demo drawer: role switch, samples, patient responses, +6/+24 h, tool modes, reset | ✅ | | | n/a |
-| Ending | 96-hour summary, awaiting closure review, closure | ✅ | | | n/a |
-| Delivery | setup.ps1 / dev.ps1, README, acceptance report | ✅ | | | n/a |
+| Area | Feature | Implemented | Verified (sim) | Verified (live) |
+|---|---|---|---|---|
+| Foundation | Data model, persisted simulated clock, after-commit SSE bus, error format | ✅ | ✅ tests + smoke | n/a |
+| Foundation | Alembic migrations (0001 on an empty DB, restart keeps data and clock offset) | ✅ | ✅ smoke (fresh DB) + Codex restart check | n/a |
+| Auth | Staff login with provisioned accounts, cookies, CSRF header, logout revokes | ✅ | ✅ `test_auth` | n/a |
+| Auth | Patient invitation + phone + one-time code, cooldown, attempt limit, rate limit, newest code only; a phone change revokes the old number | ✅ | ✅ `test_auth`, smoke | ⏳ OTP SMS needs Twilio |
+| Auth | Demo mode explicit only; demo routes 404 and OTP bodies redacted in production | ✅ | ✅ `test_auth` | n/a |
+| Permissions | Role + episode-assignment checks; other patient's episode returns 404 | ✅ | ✅ `test_permissions` | n/a |
+| Intake | Nurse intake with samples (heart failure primary, appendectomy, DKA/Kannada) | ✅ | ✅ smoke (17 facts with sources) | n/a |
+| Agent | Extraction with source lines, "not provided" fields, ungrounded LLM items dropped, rule fallback | ✅ | ✅ `test_agent_integrity` | ⏳ LLM not configured (mock) |
+| Agent | Transparent risk prioritisation | ✅ | ✅ smoke | n/a |
+| Agent | 0–96 h plan generation + validation; invalid LLM plan rejected, fallback shown | ✅ | ✅ `test_agent_integrity` | ⏳ LLM |
+| Agent | Versioned re-planning from a tool result (medication finding: v1 → v2) and from a patient reply (urgent: v3) with change summaries | ✅ | ✅ smoke + `test_api_flow` | ✅ v2 triggered by a **live** openFDA run |
+| Agent | Check-in triage; rules can only raise the LLM's level; urgent review item appears before the LLM returns | ✅ | ✅ `test_llm_can_only_raise_triage`, `test_a07_*` | ⏳ LLM |
+| Agent | Memory facts with provenance + usage log (78 usage rows in the smoke run) | ✅ | ✅ smoke | n/a |
+| Approvals | Payload-bound approval (recipient, mode, episode); edit invalidates; reject; duplicate click is a no-op | ✅ | ✅ `test_execution_flow`, `test_a05_*`, smoke (edit-approve) | n/a |
+| Approvals | Routine authorisation: listed reminder offsets only, fails closed, revocable | ✅ | ✅ `test_routine_scope_*`, `test_a06_*`, `test_revoked_routine_*` | n/a |
+| Approvals | Rejection/revocation after dispatch but before execution prep prevents the send (`BEGIN IMMEDIATE`) | ✅ | ✅ `test_decision_between_dispatch_and_prepare_prevents_send` | n/a |
+| Execution | Durable tasks, atomic claim, idempotency, bounded retry, unknown outcome with no blind retry, restart recovery, reconciliation | ✅ | ✅ `test_execution_flow`, `test_execution_fixes` | n/a |
+| Execution | Fast-forward without reminder bursts or approval bypass | ✅ | ✅ `test_fast_forward_*`, `test_late_registration_*` | n/a |
+| Execution | Demo fault switch (unknown/failure), disabled outside demo mode | ✅ | ✅ `test_a10_*` | n/a |
+| Tools | Medication information (openFDA labels + local interaction rules IR-01/IR-04) | ✅ | ✅ | ✅ **openFDA live**, 11 Nov 2026 (`verify_live.py`, smoke run) |
+| Tools | Messaging (Twilio SMS/WhatsApp, DEMO_PHONE redirect; accepted ≠ delivered) | ✅ | ✅ `test_policy_adapters` | ⏳ needs Twilio credentials |
+| Tools | Calendar (Google Calendar event, deterministic id, no double-booking) | ✅ | ✅ smoke (simulated) | ⏳ needs a service account |
+| Tools | Care-team email (SMTP) | ✅ | ✅ smoke (simulated, URGENT alert) | ⏳ needs SMTP credentials |
+| Tools | LLM structured output (Anthropic / Gemini) | ✅ | ✅ mock path + fallbacks | ⏳ needs an API key |
+| Hospital UI | Overview, patients, intake + extraction review, workspace + timeline, approvals, settings, demo drawer | ✅ | ◐ Codex browser walkthrough; approval-refresh retest pending | n/a |
+| Patient UI | Sign-in, Today, guided check-in with drafts, instructions, messages, follow-up, receipt with warning signs + contacts | ✅ | ◐ Codex browser walkthrough; receipt retest pending | n/a |
+| Ending | 96-hour summary → awaiting closure review → closure | ✅ | ✅ smoke + `test_96h_summary_and_closure` | n/a |
+| Delivery | `setup.ps1`, `dev.ps1`, `demo.ps1`, README | ✅ | ◐ demo.ps1 used for the smoke run; clean-machine setup not tested | n/a |
+
+## Open items before submission (12 Nov, 10:00 AM IST)
+
+1. **Second live integration.** PS-07 asks for real actions through at least two tools. openFDA is verified live. Add Twilio (trial) or Gmail SMTP credentials to `backend/.env`, then run `scripts\verify_live.py` and the demo. See the README section "Going live".
+2. Browser retest of approval refresh and the patient receipt (do it while rehearsing the video).
+3. Mobile widths, keyboard/accessibility pass, clean-machine setup.
