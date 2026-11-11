@@ -1,6 +1,6 @@
 # Feature status
 
-_Last reconciled from evidence: Wed 11 Nov 2026, 10:00 PM IST (branch `rebuild`)._
+_Last reconciled from evidence: Wed 11 Nov 2026, 11:00 PM IST._
 
 Columns are filled from evidence only:
 
@@ -12,10 +12,11 @@ Columns are filled from evidence only:
 
 | Check | Result |
 |---|---|
-| `pytest -q` (backend) | **90 passed** in 73 s (11 Nov, 9:45 PM IST) |
+| `pytest -q` (backend) | **90 passed** (11 Nov, 10:30 PM IST, after the live credentials were added; tests force every provider to simulated) |
 | `npm run build` (frontend) | TypeScript + Vite production build passed |
-| `backend/scripts/smoke_story.py` against `scripts/demo.ps1` on a fresh database | **All 30 steps passed**: the whole 3-minute demo story (below) over real HTTP, with the background worker running and openFDA live |
-| `backend/scripts/verify_live.py` | openFDA `success/live`, labels found for lisinopril + spironolactone (+ furosemide in the smoke run). Twilio, SMTP and Calendar were **skipped: no credentials configured** |
+| `backend/scripts/smoke_story.py` on a fresh database | **All 30 steps passed** against `demo.ps1` (openFDA live). **All 31 steps passed** against a server reading `backend/.env` (openFDA + Gmail SMTP live): the URGENT care-team alert executed in LIVE mode, accepted by Gmail (11 Nov, 10:35 PM IST) |
+| `backend/scripts/verify_live.py` | openFDA `success/live` (labels found). **Gmail SMTP `success/live`**: test email accepted by smtp.gmail.com:587 (11 Nov, 10:23 PM IST). Twilio and Calendar skipped: not configured |
+| `GET /api/settings` (Settings page data) | `medication_info: live`, `care_team_email: live`; messaging, calendar and LLM `simulated` |
 | Browser walkthrough (Comet, by Codex, 11 Nov) | Nurse intake → doctor activation → welcome approval → +24 h → patient OTP sign-in → guided check-in → urgent concern → plan v3 → urgent approval. A stale approval card was found and fixed (notice scopes). **A browser retest after that fix is still pending.** |
 
 ## Matrix
@@ -44,7 +45,7 @@ Columns are filled from evidence only:
 | Tools | Medication information (openFDA labels + local interaction rules IR-01/IR-04) | ✅ | ✅ | ✅ **openFDA live**, 11 Nov 2026 (`verify_live.py`, smoke run) |
 | Tools | Messaging (Twilio SMS/WhatsApp, DEMO_PHONE redirect; accepted ≠ delivered) | ✅ | ✅ `test_policy_adapters` | ⏳ needs Twilio credentials |
 | Tools | Calendar (Google Calendar event, deterministic id, no double-booking) | ✅ | ✅ smoke (simulated) | ⏳ needs a service account |
-| Tools | Care-team email (SMTP) | ✅ | ✅ smoke (simulated, URGENT alert) | ⏳ needs SMTP credentials |
+| Tools | Care-team email (SMTP) | ✅ | ✅ smoke (simulated, URGENT alert) | ✅ **Gmail SMTP live**, 11 Nov 2026: `verify_live.py` plus the URGENT alert in the smoke run (SMTP accepted; inbox arrival not yet confirmed by Neel) |
 | Tools | LLM structured output (Anthropic / Gemini) | ✅ | ✅ mock path + fallbacks | ⏳ needs an API key |
 | Hospital UI | Overview, patients, intake + extraction review, workspace + timeline, approvals, settings, demo drawer | ✅ | ◐ Codex browser walkthrough; approval-refresh retest pending | n/a |
 | Patient UI | Sign-in, Today, guided check-in with drafts, instructions, messages, follow-up, receipt with warning signs + contacts | ✅ | ◐ Codex browser walkthrough; receipt retest pending | n/a |
@@ -53,6 +54,6 @@ Columns are filled from evidence only:
 
 ## Open items before submission (12 Nov, 10:00 AM IST)
 
-1. **Second live integration.** PS-07 asks for real actions through at least two tools. openFDA is verified live. Add Twilio (trial) or Gmail SMTP credentials to `backend/.env`, then run `scripts\verify_live.py` and the demo. See the README section "Going live".
-2. Browser retest of approval refresh and the patient receipt (do it while rehearsing the video).
+1. ~~Second live integration~~: done. openFDA and Gmail SMTP are live (PS-07 asks for at least two real tools).
+2. Browser retest of (a) the approval card refreshing after a send and (b) the patient receipt screen. The app was launched for manual testing; results not yet reported. Do this while rehearsing the video.
 3. Mobile widths, keyboard/accessibility pass, clean-machine setup.

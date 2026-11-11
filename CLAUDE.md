@@ -70,7 +70,9 @@ Roles: **doctor** (reviews extraction, activates plan, approves/edits/rejects ex
 
 ## 6. Build status
 
-See `FEATURES.md` (Planned / Implemented / Verified sim / Verified live). Do not mark anything verified without evidence.
+See `FEATURES.md` (Implemented / Verified sim / Verified live). Do not mark anything verified without evidence.
+
+Snapshot (11 Nov 2026, 11:00 PM IST): all features implemented. 90 backend tests pass; the frontend build passes; `backend/scripts/smoke_story.py` (the full demo story, 31 steps) passes with live tools. **Live:** openFDA + Gmail SMTP care-team email. **Simulated fallback:** Twilio SMS, Google Calendar, LLM (rules). **Not yet confirmed in a browser:** the approval card refreshing after a send, and the patient receipt screen. Remaining: record the video (`docs/VIDEO_SCRIPT.md`) and submit.
 
 ## 7. Demo story (3 minutes)
 

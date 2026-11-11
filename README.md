@@ -18,7 +18,7 @@ The job lasts four days. It means waiting, sending scheduled check-ins, reacting
 | PS-07 requirement | How Ninety-Six does it |
 |---|---|
 | **Plans its own steps** | Turns the discharge summary into a versioned, timed plan (0–96 h). It **re-plans** when a tool result or a patient reply changes things, and records a change summary each time (v1 → v2 after the openFDA review, v3 after a red-flag reply). |
-| **Real tool use** | openFDA drug labels (**verified live**), Twilio SMS/WhatsApp, Google Calendar, SMTP care-team email. Every adapter has a simulated fallback and shows its mode (LIVE / SIMULATED) on every card. |
+| **Real tool use** | openFDA drug labels and Gmail SMTP care-team email (**both live**), plus Twilio SMS/WhatsApp and Google Calendar. Every adapter has a simulated fallback and shows its mode (LIVE / SIMULATED) on every card. |
 | **Human confirmation before anything irreversible** | Every message, booking and escalation is a payload-bound approval: editing the payload, recipient or mode invalidates it. One "routine check-ins" sign-off covers only template reminders at doctor-chosen times. Red flags are approved one by one and marked **URGENT**. |
 | **Memory** | Confirmed facts (diagnosis, medicines, red flags, reported symptoms) carry provenance. The agent re-reads them at every step and logs each use. |
 | **Safe by default** | The LLM only *proposes*: deterministic code validates plans and authorises actions. Rules can only **raise** a triage level, never lower it. It is not diagnostic and never changes doses. |
@@ -54,23 +54,26 @@ powershell -ExecutionPolicy Bypass -File .\scripts\demo.ps1    # builds the UI a
 5. **+24 h →** the patient reports breathlessness lying flat → **RED FLAG** (memory recalled), plan v3, and three **URGENT** approvals: patient safety message, care-team email, caregiver message.
 6. **Fast-forward to 96 h →** a summary for the doctor → close the episode.
 
-The same story runs headless as a smoke test: start `demo.ps1`, then in another terminal `cd backend; .\.venv\Scripts\python.exe scripts\smoke_story.py http://localhost:8010`.
+The same story runs headless as a smoke test (31 steps): start `demo.ps1`, then in another terminal `cd backend; .\.venv\Scripts\python.exe scripts\smoke_story.py http://localhost:8010`.
 
-## Going live
-Put credentials in `backend\.env` only (git-ignored). Then run `scripts\dev.ps1`, which reads them. `demo.ps1` always forces simulation.
+## Connect real services
+Ninety-Six currently runs **two live tools: openFDA** (drug labels, public, no key) **and Gmail SMTP** (the URGENT care-team alert lands in a real inbox). Twilio SMS, Google Calendar and the LLM are built and tested, but run on their simulated fallback until keys are added. Every card in the UI shows LIVE or SIMULATED.
 
-| Integration | `.env` keys | Notes |
+Credentials go in `backend\.env` only (git-ignored; `scripts\setup.ps1` creates it from `.env.example`). `scripts\dev.ps1` reads it; `scripts\demo.ps1` always keeps messaging, calendar, email and the LLM simulated.
+
+| Integration | `.env` keys | Status |
 |---|---|---|
-| openFDA | `OPENFDA_ENABLED=true` | Public, no key. |
-| Twilio SMS | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM`, `DEMO_PHONE` | A trial account works; `DEMO_PHONE` must be a number you verified with Twilio. All patient/caregiver messages are redirected to it. |
-| Care-team email | `SMTP_HOST=smtp.gmail.com`, `SMTP_PORT=587`, `SMTP_USER`, `SMTP_PASSWORD` (Gmail app password), `CARE_TEAM_EMAIL` | |
-| Google Calendar | `GOOGLE_SERVICE_ACCOUNT_FILE`, `GOOGLE_CALENDAR_ID` | Share the calendar with the service-account email. |
-| LLM | `LLM_PROVIDER=anthropic` + `ANTHROPIC_API_KEY`, or `gemini` + `GEMINI_API_KEY` | Every call has a rule-based fallback. |
+| openFDA | `OPENFDA_ENABLED=true` | **Live** (public, no key) |
+| Care-team email (Gmail) | `SMTP_HOST=smtp.gmail.com`, `SMTP_PORT=587`, `SMTP_USER`, `SMTP_PASSWORD` (a [Gmail app password](https://myaccount.google.com/apppasswords), needs 2-Step Verification), `CARE_TEAM_EMAIL` | **Live** |
+| Twilio SMS | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM`, `DEMO_PHONE` | Simulated. A trial works; `DEMO_PHONE` must be a number verified in Twilio, and every patient/caregiver message is redirected to it. |
+| Google Calendar | `GOOGLE_SERVICE_ACCOUNT_FILE`, `GOOGLE_CALENDAR_ID` | Simulated. Share the calendar with the service-account email. |
+| LLM | `LLM_PROVIDER=anthropic` + `ANTHROPIC_API_KEY`, or `gemini` + `GEMINI_API_KEY` | Rules (mock). Every call has a rule-based fallback. |
 
-Check each configured integration once (it sends one test SMS/email to your own test recipients):
+Check each configured integration once (it sends one test email or SMS to your own test recipient and prints the provider reference):
 ```powershell
 cd backend; .\.venv\Scripts\python.exe scripts\verify_live.py
 ```
+The Settings page (`/api/settings`) shows each tool's mode.
 
 ## Tests
 ```powershell
