@@ -33,3 +33,4 @@ backend/*.db-shm
 frontend/test-results/
 frontend/playwright-report/
 .claude/worktrees/
+frontend/tsconfig.tsbuildinfo
