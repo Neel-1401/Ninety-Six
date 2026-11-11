@@ -41,7 +41,8 @@ export function Timeline({
   onSelect: (stepId: number) => void;
 }) {
   const nowH = nowIso ? (new Date(nowIso).getTime() - new Date(dischargeAt).getTime()) / 3_600_000 : null;
-  const pct = (h: number) => `${(Math.min(Math.max(h, 0), 96) / 96) * 100}%`;
+  // Padded track: 22px before T+0 and 34px after T+96 so edge markers/labels are never clipped.
+  const pct = (h: number) => `calc(22px + (100% - 56px) * ${Math.min(Math.max(h, 0), 96) / 96})`;
 
   const lanes = useMemo(() => {
     return LANES.map((lane) => {
@@ -59,10 +60,20 @@ export function Timeline({
     });
   }, [steps]);
 
+  // Versions activated/created within ~2 h of each other share one marker ("v1→v2").
   const versionMarks = versions
     .filter((v) => v.status !== "discarded" && v.status !== "draft")
-    .map((v) => ({ v: v.version, h: (new Date(v.activated_at ?? v.created_at).getTime() - new Date(dischargeAt).getTime()) / 3_600_000, trigger: v.trigger }))
-    .filter((m) => m.h >= -48);
+    .map((v) => ({ v: v.version, h: (new Date(v.activated_at ?? v.created_at).getTime() - new Date(dischargeAt).getTime()) / 3_600_000 }))
+    .filter((m) => m.h >= -48)
+    .sort((a, b) => a.v - b.v)
+    .reduce<{ label: string; h: number; key: number }[]>((acc, m) => {
+      const last = acc[acc.length - 1];
+      if (last && Math.abs(Math.max(m.h, 0) - Math.max(last.h, 0)) < 2) {
+        last.label = `${last.label.split("→")[0]}→v${m.v}`;
+        last.h = m.h;
+      } else acc.push({ label: `v${m.v}`, h: m.h, key: m.v });
+      return acc;
+    }, []);
 
   const blocked = steps.filter((s) => s.status === "awaiting_approval").length;
 
@@ -73,11 +84,11 @@ export function Timeline({
         same information as text.
       </p>
       <div className="overflow-x-auto pb-2">
-        <div className="relative min-w-[760px]">
+        <div className="relative min-w-[760px] pt-5">
           {/* ticks */}
           <div className="relative ml-36 h-7 border-b border-line">
             {TICKS.map((t) => (
-              <span key={t} className="absolute top-0 -translate-x-1/2 text-xs text-muted" style={{ left: pct(t) }}>
+              <span key={t} className="absolute top-0 -translate-x-1/2 text-xs whitespace-nowrap text-muted" style={{ left: pct(t) }}>
                 T+{t} h
               </span>
             ))}
@@ -110,7 +121,7 @@ export function Timeline({
                         style={{ left: pct(s.offset_hours), top: 5 + lvl * ROW_H }}
                       >
                         <Icon aria-hidden className={cn("size-3.5", m.spin && "animate-spin")} />
-                        <span>{s.offset_hours % 1 === 0 ? s.offset_hours : s.offset_hours.toFixed(1)}h</span>
+                        <span>{Number.isInteger(s.offset_hours) ? s.offset_hours : s.offset_hours.toFixed(1)}h</span>
                       </button>
                     );
                   })}
@@ -120,8 +131,8 @@ export function Timeline({
             {/* plan version markers + now marker span all lanes */}
             <div aria-hidden className="pointer-events-none absolute inset-y-0 right-0 left-36">
               {versionMarks.map((m) => (
-                <div key={m.v} className="absolute inset-y-0 border-l-2 border-dashed border-primary/50" style={{ left: pct(m.h) }}>
-                  <span className="absolute -top-5 left-1 rounded bg-primary-soft px-1 text-[11px] font-bold text-primary-ink">v{m.v}</span>
+                <div key={m.key} className="absolute inset-y-0 border-l-2 border-dashed border-primary/50" style={{ left: pct(m.h) }}>
+                  <span className="absolute -top-5 left-1 rounded bg-primary-soft px-1 text-[11px] font-bold whitespace-nowrap text-primary-ink">Plan {m.label}</span>
                 </div>
               ))}
               {nowH != null && (

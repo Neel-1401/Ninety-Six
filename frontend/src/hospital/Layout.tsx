@@ -31,7 +31,7 @@ export function HospitalLayout() {
         <nav aria-label="Hospital" className="flex flex-col gap-1 px-3 py-2">
           <NavItems />
         </nav>
-        <div className="mt-auto border-t border-line px-4 py-3 text-xs text-muted">
+        <div className="mt-auto border-t border-line px-4 pt-3 pb-16 text-xs text-muted">
           Prototype · fictional patients only. Not for clinical use.
         </div>
       </aside>

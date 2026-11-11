@@ -150,6 +150,10 @@ export function PlanDiffView({ versions, current }: { versions: PlanVersionOut[]
   const older = useMemo(() => versions.filter((v) => v.version < current.version).sort((a, b) => b.version - a.version), [versions, current.version]);
   const defaultBase = older.find((v) => v.id === current.based_on_version_id) ?? older[0];
   const [baseId, setBaseId] = useState<number | null>(defaultBase?.id ?? null);
+  const [showKept, setShowKept] = useState(false);
+  const meaningful = current.change_summary.filter((c) => c.change !== "kept");
+  const keptCount = current.change_summary.length - meaningful.length;
+  const shownChanges = showKept ? current.change_summary : meaningful;
   const base = older.find((v) => v.id === baseId) ?? defaultBase;
 
   if (!base) {
@@ -175,7 +179,8 @@ export function PlanDiffView({ versions, current }: { versions: PlanVersionOut[]
         <div className="rounded-md border border-line bg-sunken/50 px-3 py-2">
           <p className="text-sm font-bold">Agent's explanation of what changed and why ({TRIGGER_LABEL[current.trigger] ?? current.trigger})</p>
           <ul className="mt-1 space-y-1 text-sm">
-            {current.change_summary.map((c, i) => (
+            {shownChanges.length === 0 && <li className="text-muted">No steps added, removed or changed.</li>}
+            {shownChanges.map((c, i) => (
               <li key={i} className="flex items-start gap-2">
                 <ChangeIcon kind={c.change} />
                 <span>
@@ -184,6 +189,11 @@ export function PlanDiffView({ versions, current }: { versions: PlanVersionOut[]
               </li>
             ))}
           </ul>
+          {keptCount > 0 && (
+            <button type="button" aria-expanded={showKept} onClick={() => setShowKept((v) => !v)} className="mt-1 text-xs font-bold text-primary-ink underline cursor-pointer">
+              {showKept ? "Hide" : "Show"} {keptCount} unchanged step{keptCount === 1 ? "" : "s"}
+            </button>
+          )}
         </div>
       )}
       {diffs.length === 0 ? (

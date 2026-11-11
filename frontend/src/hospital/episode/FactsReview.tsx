@@ -86,7 +86,7 @@ export function FactsReview({ ep, editable }: { ep: EpisodeDetail; editable: boo
         />
         <div className="space-y-4 px-4 py-4">
           {ep.extraction_notes.length > 0 && (
-            <Banner tone="warning" title="Ambiguities noted during extraction">
+            <Banner tone="warning" title="Extraction notes (ambiguities and caveats)">
               <ul className="list-disc pl-5">
                 {ep.extraction_notes.map((n, i) => (
                   <li key={i}>{n}</li>

@@ -210,7 +210,7 @@ function StepList({ steps }: { steps: PlanStepOut[] }) {
             <p className="mt-1 text-sm">
               {s.executed_at && <span className="text-muted">Ran {fmtDateTime(s.executed_at)}. </span>}
               {s.result_summary}
-              {s.status_reason && <span className="text-muted"> {s.status_reason}</span>}
+              {s.status_reason && s.status_reason !== s.result_summary && <span className="text-muted"> {s.status_reason}</span>}
             </p>
           )}
         </li>

@@ -47,7 +47,7 @@ function OverviewBody({ data, isDoctor }: { data: OverviewOut; isDoctor: boolean
   return (
     <div className="space-y-5">
       {urgent.length > 0 && (
-        <Banner tone="urgent" live title={`${urgent.length} urgent concern${urgent.length === 1 ? "" : "s"} need a clinician now`}>
+        <Banner tone="urgent" live title={`${urgent.length} urgent concern${urgent.length === 1 ? " needs" : "s need"} a clinician now`}>
           Review below. External replies still require doctor approval before anything is sent.
         </Banner>
       )}
