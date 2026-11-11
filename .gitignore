@@ -26,3 +26,10 @@ frontend/dist/
 Thumbs.db
 .vscode/
 .idea/
+
+# Local runtime / tests
+backend/*.db-wal
+backend/*.db-shm
+frontend/test-results/
+frontend/playwright-report/
+.claude/worktrees/
