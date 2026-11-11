@@ -46,11 +46,11 @@
 
 ---
 
-## 4. Architecture in one breath
+## 4. Architecture (rebuild, 11 Nov 2026 — supersedes the original scaffold)
 
-React + Vite UI ⇄ FastAPI (REST + SSE) → **Agent core:** Parser → Planner → Executor ⇄ Approval gate, plus a Monitor (triage of replies + a 5-second clock tick) → Tools (Twilio / Google Calendar / openFDA / SMTP) · SQLite holds memory, plan and the full trace.
+React + Vite + Tailwind UI ⇄ FastAPI (REST + SSE) → modular backend: `api/` routes + `auth/` permission checks (Agent A) → `services/agent_ops.py` → `agent/` extraction, risk, planning, triage, replanning, memory + `policy/` approval rules + `execution/` durable task worker + `tools/` adapters (Agent B) → SQLAlchemy 2 / Alembic / SQLite. The LLM only *proposes*; deterministic code validates and authorises. Full contracts: `docs/CONTRACTS.md`; decisions: `docs/DECISIONS.md`; original brief: `docs/BRIEF.md`; status: `FEATURES.md`.
 
-**Agent loop:** parse summary → write memory → plan timed steps (0–96 h) → run due steps → gate irreversible ones → patient reply is triaged against memory → re-plan (escalate / reply / caregiver) → 96-hour summary.
+Roles: **doctor** (reviews extraction, activates plan, approves/edits/rejects external actions, revokes routine authorisation, closes episodes), **nurse** (intake, corrections, team, follow-up, review items, notes), **patient** (invitation + phone + one-time code; instructions, guided check-ins, messages, follow-up).
 
 ---
 
@@ -58,50 +58,19 @@ React + Vite UI ⇄ FastAPI (REST + SSE) → **Agent core:** Parser → Planner 
 
 | Area | Choice / rule |
 |---|---|
-| Backend | Python 3.11+, FastAPI, SQLModel, httpx, python-dotenv |
-| DB | SQLite `backend/ninety_six.db`; JSON columns for `args`, `result`, `payload`, `detail` (always **reassign** dicts, never mutate in place) |
-| Times | Store naive UTC from `clock.now()`; serialize with `iso()` (adds `Z`). **The UI shows 12-hour times (e.g. 8:00 PM)** and `T+24h` labels. |
-| Tools | Subclass `tools/base.py::Tool` → set `name`, `irreversible`, `args_doc`; implement `live()`, `preview()`, `run()`; register in `tools/__init__.py`. A tool may return `followups` (step specs) to extend the plan. |
-| Trace | Every meaningful action calls `events.log_event(session, kind, title, patient_id, detail)`; that also pushes SSE to the UI. |
-| Memory | Write with `memory.remember()`, read with `memory.recall()` (reads are logged so the demo shows memory in use). |
-| Concurrency | Agent work runs under `executor._lock` (RLock), which SQLite needs. |
-| Frontend | React 18 + TypeScript + Vite, react-router, plain CSS (no Tailwind). Vite proxies `/api` → `localhost:8000`. One `EventSource` in `LiveProvider`; pages refetch on each event. |
+| Backend | Python 3.11+ (dev box: 3.14), FastAPI, Pydantic v2, SQLAlchemy 2.0, Alembic, httpx |
+| DB | SQLite `backend/ninety_six.db` (WAL). JSON columns: always **reassign**, never mutate in place. Keep transactions short; never call a provider inside a transaction. |
+| Times | Aware UTC everywhere via `app.clock.clock.now()` (simulated, persisted offset). Security timers use `clock.real_now()`. API emits ISO `...Z`; UI shows Asia/Kolkata 12-hour times and `T+24 h` labels. |
+| Audit/SSE | `app.events.record_event(session, kind, title, episode_id=..., scopes=[...])` — persisted in the transaction, published after commit. SSE is a refetch hint only. |
+| Errors | `{"error": {"code", "message", "details"}}` via `app.errors`. Other patient's / unassigned episode → 404; wrong role → 403. |
+| Frontend | React 19 + TypeScript 6 + Vite 8 + Tailwind v4 + React Router 7 + TanStack Query 5 + Framer Motion (reduced-motion aware) + lucide icons. Shared kit in `frontend/src/ui`, API/types/SSE/auth/format in `frontend/src/lib` (lead-owned). |
 | Secrets | Only in `backend/.env` (git-ignored). Never commit keys or `service-account.json`. |
 
 ---
 
-## 6. Build status (as of Wed 11 Nov 2026, 1:45 PM)
+## 6. Build status
 
-### ✅ Written (backend core, not yet run or tested)
-```
-backend/app/config.py · clock.py · db.py · models.py · events.py · memory.py · seed.py
-backend/app/llm/__init__.py
-backend/app/agent/prompts.py · parser.py · planner.py · executor.py · monitor.py
-backend/app/tools/base.py · messaging.py · calendar.py · drug_info.py · care_team.py · __init__.py
-backend/requirements.txt · backend/.env.example
-CLAUDE.md · README.md · docs/BLUEPRINT.md · docs/INSTRUCTIONS.md · .gitignore · LICENSE
-```
-
-### ⏳ To build next (in order)
-1. `backend/app/serializers.py`, `routers/` (patients, approvals, simulate, system, stream), `main.py` (lifespan: init_db, bind bus, tick task; serve `frontend/dist`)
-2. `tests/test_flow.py` (intake → approvals → +24 h → red flag → urgent escalation)
-3. Frontend: layout (Sidebar, TopBar, ClockControl) → Dashboard → Intake → Patient Detail (Timeline96, PlanView, MessageThread, PatientSimulator, MemoryPanel, ActivityLog) → Approvals → Settings
-4. Live keys: Gemini → Twilio WhatsApp sandbox (`DEMO_PHONE`) → Google Calendar service account → SMTP
-5. `scripts/setup.ps1`, `scripts/dev.ps1`, README with screenshots, 6-slide deck, 3-min video
-
-### Timeline to deadline
-| When | Goal |
-|---|---|
-| Wed 11 Nov, 2:00 PM – 5:00 PM | Backend runs end to end; test passes |
-| Wed 11 Nov, 5:00 PM – 10:00 PM | Frontend complete |
-| Wed 11 Nov, 10:00 PM – 12:00 AM | Real integrations (Gemini, Twilio sandbox; Calendar if time) |
-| Thu 12 Nov, 6:00 AM – 8:30 AM | README screenshots, deck, record video |
-| Thu 12 Nov by 9:00 AM | Final push and submit (hard deadline 10:00 AM) |
-
-### Cut list if behind
-Drop SMTP → drop Google Calendar (Twilio + openFDA still meet "≥2 tools") → drop the Twilio inbound webhook (use the in-app Patient Simulator).
-
----
+See `FEATURES.md` (Planned / Implemented / Verified sim / Verified live). Do not mark anything verified without evidence.
 
 ## 7. Demo story (3 minutes)
 
@@ -119,19 +88,12 @@ Sample patients in `seed.py`: heart failure (high risk), appendectomy (low), dia
 ## 8. Run (Windows PowerShell)
 
 ```powershell
-# backend
-cd ninety-six\backend
-python -m venv .venv; .\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-copy .env.example .env
-uvicorn app.main:app --reload --port 8000
-
-# frontend (new terminal)
-cd ninety-six\frontend
-npm install; npm run dev   # http://localhost:5173
+powershell -ExecutionPolicy Bypass -File .\scripts\setup.ps1   # venv, pip, .env, migrations, npm ci
+powershell -ExecutionPolicy Bypass -File .\scripts\dev.ps1     # backend :8000 + frontend :5173
 ```
 
-Key env vars: `LLM_PROVIDER`, `GEMINI_API_KEY` / `ANTHROPIC_API_KEY`, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM`, `DEMO_PHONE`, `GOOGLE_SERVICE_ACCOUNT_FILE`, `GOOGLE_CALENDAR_ID`, `SMTP_*`, `CARE_TEAM_EMAIL`, `OPENFDA_ENABLED`, `HOSPITAL_NAME`, `EMERGENCY_NUMBER=108`. With no keys at all, everything runs in simulated mode.
+Tests: `cd backend; .\.venv\Scripts\python.exe -m pytest -q` and `cd frontend; npm run build`.
+With no keys at all, everything runs in simulated mode (`APP_MODE=demo`). See `backend/.env.example`.
 
 ---
 
@@ -139,9 +101,9 @@ Key env vars: `LLM_PROVIDER`, `GEMINI_API_KEY` / `ANTHROPIC_API_KEY`, `TWILIO_AC
 
 - Don't change the decisions in §3 without asking Neel.
 - The demo must never depend on a single external call succeeding: keep the fallbacks.
-- Keep irreversible actions behind `run_step`'s approval gate; never call a tool's `run()` directly from a router.
+- Keep external actions behind the approval policy + executor pre-flight; routers never call tool adapters directly (only OTP/invitation SMS, see CONTRACTS §11).
 - Prefer finishing the list in §6 over adding features.
 - Windows commands only; 12-hour times in any UI or docs.
-- Update §6 of this file whenever something gets built.
+- Update `FEATURES.md` whenever something gets built or verified.
 - Commit small and often (`feat:`, `fix:`, `docs:` prefixes); never commit `.env`, `*.db` or `service-account.json`.
 - Before saying a task is done: run `pytest` in `backend/` and `npm run build` in `frontend/`.
